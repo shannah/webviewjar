@@ -271,6 +271,11 @@ extern "C" {
         struct webview *w = (struct webview *)arg;
         if (event == WEBKIT_LOAD_FINISHED) {
             w->priv.ready = 1;
+            w->url = webkit_web_view_get_uri (webview);
+            if (w->onload_cb != NULL) {
+                webview_onload_cb_t cb = (webview_onload_cb_t)w->onload_cb;
+                cb();
+            }
         }
     }
     
