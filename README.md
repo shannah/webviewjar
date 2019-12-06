@@ -74,11 +74,11 @@ webview = new WebView()
        //.. Do something on page load.
 	   // You can get the url of the page via webview.url()
     })
-	.javascriptCallback(message->{
-		// Handle a message sent via window.external.invoke(message)
-		// message is a string.
-	})
-	.show();
+    .javascriptCallback(message->{
+        // Handle a message sent via window.external.invoke(message)
+        // message is a string.
+    })
+    .show();
 ~~~~
 
 NOTE: The `show()` method will start a blocking event loop.
