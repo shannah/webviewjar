@@ -75,13 +75,18 @@
             <arg value="build-mac.sh"/>
         </exec>
     </target>
-    
+    <target name="build-native-windows" description="build-native-windows">
+        <exec executable="bash">
+            <arg value="build-windows.sh"/>
+        </exec>
+    </target>
+    <target name="build-native-linux" description="build-native-linux">
+        <exec executable="bash">
+            <arg value="build-linux.sh"/>
+        </exec>
+    </target>
     <target name="shaded-jar" depends="jar" description="Create shaded jar">
-        <mkdir dir="dist/native"/>
-        <mkdir dir="dist/native/darwin"/>
-        <mkdir dir="dist/native/linux-x86-64"/>
-        <copy file="libwebview.dylib" todir="dist/native/darwin"/>
-        <copy file="libwebview.so" todir="dist/native/linux-x86-64"/>
+        
         <jar destfile="dist/${application.title}-shaded.jar">
             <manifest>
             <attribute name="Main-Class"
@@ -89,7 +94,6 @@
           </manifest>
             <zipfileset src="lib/jna-5.5.0.jar"/>
             <zipfileset src="${dist.jar}"/>
-            <fileset dir="dist/native"></fileset>
         </jar>
     </target>
 </project>
