@@ -20,7 +20,7 @@ import java.util.concurrent.Executors;
  *
  * @author shannah
  */
-public class WebViewController  implements AutoCloseable {
+public class WebViewServer  implements AutoCloseable {
     
     private InputStream input;
     private OutputStream output;
@@ -30,7 +30,7 @@ public class WebViewController  implements AutoCloseable {
     private Thread inputThread;
     private boolean closed;
     
-    public WebViewController(WebView webview, InputStream input, OutputStream output) {
+    public WebViewServer(WebView webview, InputStream input, OutputStream output) {
         this.webview = webview;
         this.input = input;
         this.output = output;
@@ -50,20 +50,12 @@ public class WebViewController  implements AutoCloseable {
     
     
     private void initWebView() {
-        JavascriptCallback existingJSCallback = webview.javascriptCallback();
-        webview.javascriptCallback(arg->{
-            if (existingJSCallback != null) {
-                existingJSCallback.run(arg);
-            }
-            sendMessage(arg, true);
+        //JavascriptCallback existingJSCallback = webview.javascriptCallback();
+        webview.addJavascriptCallback("postMessageExt", arg->{
+            sendMessage(arg, false);
         });
-        Runnable existingLoadCallback = webview.onLoad();
-        webview.onLoad(()->{
-            if (existingLoadCallback != null) {
-                existingLoadCallback.run();
-            }
-            sendMessage("loaded "+webview.url(), false);
-        });
+        webview.addOnBeforeLoad("document.addEventListener('DOMContentLoaded', function(){postMessageExt({type:'event', name:'onload', url:window.location.href});});");
+        
     }
     
     

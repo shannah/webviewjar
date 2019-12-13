@@ -1,89 +1,197 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdint.h>
-#define WEBVIEW_STATIC
+#include <iostream>
 #define WEBVIEW_IMPLEMENTATION
 #include "webview.h"
+#include "ca_weblite_webview_WebViewNative.h"
 
-#ifdef WIN32
-int WINAPI WinMain(HINSTANCE hInt, HINSTANCE hPrevInst, LPSTR lpCmdLine,
-                   int nCmdShow) {
-#else
-int main() {
-#endif
-  /* Open wikipedia in a 800x600 resizable window */
-  webview("Minimal webview example",
-      "https://en.m.wikipedia.org/wiki/Main_Page", 800, 600, 1);
-  return 0;
-}
-void CgoWebViewFree(void *w) {
-    free((void *)((struct webview *)w)->title);
-    free((void *)((struct webview *)w)->url);
-    free(w);
-}
 
-void *CgoWebViewCreate(int width, int height, char *title, char *url, int resizable, int debug, 
-                       webview_external_invoke_cb_t webviewExternalInvokeCallback, webview_onload_cb_t webviewOnloadCallback) {
-    struct webview *w = (struct webview *) calloc(1, sizeof(*w));
-    w->width = width;
-    w->height = height;
-    w->title = title;
-    w->url = url;
-    w->resizable = resizable;
-    w->debug = debug;
-    w->external_invoke_cb = webviewExternalInvokeCallback;
-    w->onload_cb = webviewOnloadCallback;
-    if (webview_init(w) != 0) {
-        CgoWebViewFree(w);
-        return NULL;
-    }
-    return (void *)w;
+
+typedef  void (*callback_t)(const char *, void *);
+WEBVIEW_API void webview_bind(webview_t w, const char *name,
+                              callback_t fn, void *arg) {
+     webview::webview *wv = (webview::webview*)w;
+
+
+     wv->bind(name,  [w, fn](std::string s) -> std::string {
+
+        if (fn != NULL) {
+            fn(s.c_str(), (void*)w);
+        }
+        //
+        return "";
+      });            
 }
 
-const char* CgoWebViewURL(struct webview *w) {
-    return w->url;
+
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_create
+ * Signature: (IJ)J
+ */
+JNIEXPORT jlong JNICALL Java_ca_weblite_webview_WebViewNative_webview_1create
+  (JNIEnv *env, jclass clazz, jint debug, jlong win) {
+    return (jlong)webview_create((int)debug, (void*)win);
 }
 
-int CgoWebViewLoop(void *w, int blocking) {
-    return webview_loop((struct webview *)w, blocking);
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_destroy
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1destroy
+  (JNIEnv *env, jclass clazz, jlong wv) {
+    webview_destroy((webview_t)wv);
 }
 
-void CgoWebViewTerminate(void *w) {
-    webview_terminate((struct webview *)w);
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_run
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1run
+  (JNIEnv *env, jclass clazz, jlong wv) {
+    webview_run((webview_t)wv);
 }
 
-void CgoWebViewExit(void *w) {
-    webview_exit((struct webview *)w);
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_terminate
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1terminate
+  (JNIEnv *env, jclass clazz, jlong wv) {
+    webview_terminate((webview_t)wv);
 }
 
-void CgoWebViewSetTitle(void *w, char *title) {
-    webview_set_title((struct webview *)w, title);
-}
 
-void CgoWebViewSetFullscreen(void *w, int fullscreen) {
-    webview_set_fullscreen((struct webview *)w, fullscreen);
-}
-
-void CgoWebViewSetColor(void *w, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    webview_set_color((struct webview *)w, r, g, b, a);
-}
-
-void CgoDialog(void *w, int dlgtype, int flags,
-                             char *title, char *arg, char *res, size_t ressz) {
-    webview_dialog(w, dlgtype, flags,
-                   (const char*)title, (const char*) arg, res, ressz);
-}
-
-int CgoWebViewEval(void *w, char *js) {
-    return webview_eval((struct webview *)w, js);
-}
-
-void CgoWebViewInjectCSS(void *w, char *css) {
-    webview_inject_css((struct webview *)w, css);
-}
-void CgoWebViewDispatch(struct webview *w, webview_dispatch_fn fn,
-                        void *arg) {
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_dispatch
+ * Signature: (JLjava/lang/Runnable;J)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1dispatch
+  (JNIEnv *env, jclass clazz, jlong w, jobject callback, jlong arg) {
+    webview::webview *wv = (webview::webview*)w;
     
-    webview_dispatch(w, fn, arg);
+    JavaVM *jvm;
+    (env)->GetJavaVM(&jvm);
+    jclass objClass = env->GetObjectClass(callback);
+    jclass callbacksClass;
+    if (objClass)
+	{
+		callbacksClass = reinterpret_cast<jclass>(env->NewGlobalRef(objClass));
+		env->DeleteLocalRef(objClass);
+	}
+    jobject callbackInstance = env->NewGlobalRef(callback);
+
+    wv->dispatch([env, callback,jvm,callbacksClass,callbackInstance]() {
+        (jvm)->AttachCurrentThread((void**)&env, NULL);
+        jmethodID run = env->GetMethodID(callbacksClass, "run", "()V");
+        (env)->CallVoidMethod(callbackInstance, run);
+        env->DeleteGlobalRef(callbackInstance);
+        env->DeleteGlobalRef(callbacksClass);
+    });
 }
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_get_window
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_ca_weblite_webview_WebViewNative_webview_1get_1window
+  (JNIEnv *env, jclass clazz, jlong w) {
+    return (jlong)webview_get_window((webview_t)w);
+}
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_set_title
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1set_1title
+  (JNIEnv *env, jclass clazz, jlong w, jstring title) {
+    const char* utf = (env)->GetStringUTFChars(title, 0);
+    webview_set_title((webview_t)w, utf);
+    (env)->ReleaseStringUTFChars(title, utf);
+}
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_set_bounds
+ * Signature: (JIIIII)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1set_1bounds
+  (JNIEnv *env, jclass clazz, jlong wv, jint x, jint y, jint w, jint h, jint flags) {
+    webview_set_bounds((webview_t)wv, x, y, w, h, flags);
+}
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_navigate
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1navigate
+  (JNIEnv *env, jclass clazz, jlong w, jstring url) {
+     const char* utf = (env)->GetStringUTFChars(url, 0);
+    webview_navigate((webview_t)w, utf);
+    (env)->ReleaseStringUTFChars(url, utf);
+}
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_init
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1init
+  (JNIEnv *env, jclass clazz, jlong w, jstring js) {
+    const char* utf = (env)->GetStringUTFChars(js, 0);
+    webview_init((webview_t)w, utf);
+    (env)->ReleaseStringUTFChars(js, utf);
+}
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_eval
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1eval
+  (JNIEnv *env, jclass clazz, jlong w, jstring js) {
+    const char* utf = (env)->GetStringUTFChars(js, 0);
+    webview_eval((webview_t)w, utf);
+    (env)->ReleaseStringUTFChars(js, utf);
+}
+
+/*
+ * Class:     ca_weblite_webview_WebViewNative
+ * Method:    webview_bind
+ * Signature: (JLjava/lang/String;Lca/weblite/webview/WebViewNativeCallback;J)V
+ */
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1bind
+  (JNIEnv *env, jclass clazz, jlong wv, jstring name, jobject fn, jlong arg) {
+    webview::webview *w = (webview::webview*)wv;
+    const char* nameUtf = (env)->GetStringUTFChars(name, 0);
+    JavaVM *jvm;
+    (env)->GetJavaVM(&jvm);
+    jobject fnInstance = env->NewGlobalRef(fn);
+    jclass objClass = env->GetObjectClass(fn);
+    jclass callbacksClass;
+    if (objClass)
+    {
+            callbacksClass = reinterpret_cast<jclass>(env->NewGlobalRef(objClass));
+            env->DeleteLocalRef(objClass);
+    }
+    w->bind(nameUtf, [fnInstance,env,jvm,callbacksClass](std::string s) -> std::string {
+        (jvm)->AttachCurrentThread((void**)&env, NULL);
+        const char* strArg = s.c_str();
+        
+        jmethodID invoke = (env)->GetMethodID(callbacksClass, "invoke", "(Ljava/lang/String;J)V"); 
+        
+        (env)->CallVoidMethod(fnInstance, invoke, (env)->NewStringUTF(strArg));
+        //env->DeleteGlobalRef(fnInstance);
+        
+        return s;
+    });
+    (env)->ReleaseStringUTFChars(name, nameUtf);
+}
+
 

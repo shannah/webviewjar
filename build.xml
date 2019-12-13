@@ -92,7 +92,7 @@
             <attribute name="Main-Class"
                        value="ca.weblite.webview.WebViewCLI"/>
           </manifest>
-            <zipfileset src="lib/jna-5.5.0.jar"/>
+            <!--<zipfileset src="lib/jna-5.5.0.jar"/>-->
             <zipfileset src="${dist.jar}"/>
         </jar>
     </target>

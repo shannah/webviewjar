@@ -5,26 +5,16 @@
  */
 package ca.weblite.webview;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.lang.management.ManagementFactory;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Enumeration;
-import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  *
@@ -47,6 +37,7 @@ public class WebViewCLI {
     private Hashtable<String,String> additionalParams = new Hashtable<String,String>();
     private boolean oauth;
     private File oauthOutputFile;
+    private String onLoad;
     
     private void init() throws IOException {
         String u = oauth ? getFullUrl() : url;
@@ -54,14 +45,11 @@ public class WebViewCLI {
                 .size(width, height)
                 .title(title)
                 .resizable(resizable)
-                .fullscreen(fullscreen)
                 .url(u)
-                .onLoad(()->{
-                    if (oauth) {
-                        handleURL(webview.url());
-                    }
-                })
                 ;
+        if (onLoad != null) {
+            webview.addOnBeforeLoad(onLoad);
+        }
         if (port >= 0) {
             WebviewSocketServer serve = new WebviewSocketServer(port, webview);
             new Thread(()->{
@@ -69,7 +57,7 @@ public class WebViewCLI {
             }).start();
             
         } else {
-            WebViewController ctrl = new WebViewController(webview, System.in, System.out);
+            WebViewServer ctrl = new WebViewServer(webview, System.in, System.out);
             
         }
         webview.show();
@@ -154,11 +142,34 @@ public class WebViewCLI {
                 continue;
             }
             if ("-port".equals(arg)) {
-                oauth.port = Integer.parseInt(arg);
+                oauth.port = Integer.parseInt(val);
                 continue;
             }
             if ("-oauth".equals(arg)) {
                 oauth.oauth = true;
+                continue;
+            }
+            if ("-onLoad".equalsIgnoreCase(arg)) {
+                if (oauth.onLoad == null) {
+                    oauth.onLoad = "";
+                }
+                oauth.onLoad += "\n" + val;
+                continue;
+                
+            }
+            if ("-onLoadFile".equalsIgnoreCase(arg)) {
+                File f = new File(val);
+                byte[] buf = new byte[(int)f.length()];
+                try (FileInputStream fis = new FileInputStream(new File(val))) {
+                    fis.read(buf);
+                    if (oauth.onLoad == null) {
+                        oauth.onLoad = "";
+                    }
+                    oauth.onLoad += "\n" + new String(buf, "UTF-8");
+                } catch (IOException ex) {
+                    ex.printStackTrace();
+                    System.exit(1);
+                }
             }
             oauth.additionalParams.put(arg.substring(1), val);
             
@@ -470,26 +481,11 @@ public class WebViewCLI {
           jvmArgs.add(arg);
       }
       
-      // if you don't need console output, just enable these two lines 
-      // and delete bits after it. This JVM will then terminate.
-      //ProcessBuilder processBuilder = new ProcessBuilder(jvmArgs);
-      //processBuilder.start();
-      
       try {
          ProcessBuilder processBuilder = new ProcessBuilder(jvmArgs);
          processBuilder.inheritIO();
-         //processBuilder.redirectErrorStream(true);
          Process process = processBuilder.start();
-         
-         //InputStream is = process.getInputStream();
-         //InputStreamReader isr = new InputStreamReader(is);
-         //BufferedReader br = new BufferedReader(isr);
-         //String line;
-         
-         //while ((line = br.readLine()) != null) {
-         //   System.out.println(line);
-         //}
-         
+
          process.waitFor();
       } catch (Exception e) {
          e.printStackTrace();

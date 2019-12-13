@@ -45,64 +45,7 @@ public class WebViewTest {
         
         
     }
-    public static void main2(String[] args) {
-        System.out.println("Creating webview");
-        w = CWebView.INSTANCE.CgoWebViewCreate(500, 500, "Hello", "https://weblite.ca", 1, 1, new CWebViewCallback() {
-            @Override
-            public void cwebviewcallback(Pointer webview, String arg) {
-                System.out.println("Hello world "+arg);
-                
-            }
-        }, new CWebViewOnloadCallback() {
-            @Override
-            public void onLoad() {
-                
-                CWebView.INSTANCE.CgoWebViewDispatch(w, new Callback() {
-
-                    public void dispatch() {
-                        CWebView.INSTANCE.CgoWebViewEval(w, "window.external.invoke(window.location.href)");
-                    }
-                }, null);
-            }
-        });
-        ExecutorService edt = Executors.newFixedThreadPool(1);
-
-        Timer t = new Timer();
-        t.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                CWebView.INSTANCE.CgoWebViewDispatch(w, new Callback() {
-
-                    public void dispatch() {
-                        CWebView.INSTANCE.CgoWebViewEval(w, "window.external.invoke('foobar2')");
-                    }
-                }, null);
-            }
-            
-        }, 2000);
-        edt.submit(()->{
-            System.out.println("Submitting");
-            CWebView.INSTANCE.CgoWebViewDispatch(w, new Callback() {
-
-                public void dispatch() {
-                    CWebView.INSTANCE.CgoWebViewEval(w, "window.addEventListener('load', function(){window.external.invoke('foobar')})");
-                }
-            }, null);
-        });
-        
-        while (CWebView.INSTANCE.CgoWebViewLoop(w, 1) == 0) {
-            /*
-            CWebView.INSTANCE.CgoWebViewDispatch(w, new Callback() {
-
-                public void dispatch(Pointer w, Pointer arg) {
-                    System.out.println("On dispatch");
-                }
-            }, null);
-            */
-        }
-        CWebView.INSTANCE.CgoWebViewExit(w);
-        System.out.println("Webview created");
-    }
+   
     
     
     

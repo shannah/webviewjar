@@ -14,11 +14,11 @@ import java.net.Socket;
  */
 public class WebViewSocket implements AutoCloseable {
     private Socket sock;
-    private WebViewController controller;
+    private WebViewServer controller;
     
     public WebViewSocket(Socket sock, WebView webview) throws IOException {
         this.sock = sock;
-        this.controller = new WebViewController(webview, sock.getInputStream(), sock.getOutputStream());
+        this.controller = new WebViewServer(webview, sock.getInputStream(), sock.getOutputStream());
                
     }
 

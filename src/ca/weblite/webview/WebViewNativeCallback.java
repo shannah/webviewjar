@@ -5,12 +5,10 @@
  */
 package ca.weblite.webview;
 
-import com.sun.jna.Callback;
-
 /**
  *
  * @author shannah
  */
-public interface CWebViewOnloadCallback extends Callback {
-    public void onLoad();
+public interface WebViewNativeCallback {
+    void invoke(String arg2, long wv);
 }

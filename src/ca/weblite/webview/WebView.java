@@ -5,25 +5,27 @@
  */
 package ca.weblite.webview;
 
-import com.sun.jna.Callback;
-import com.sun.jna.Pointer;
+//import com.sun.jna.Callback;
+//import com.sun.jna.Pointer;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  *
  * @author shannah
  */
 public class WebView {
-    
-    private Pointer peer;
+    private long peer;
     private int w=800, h=600;
     private boolean resizable=true;
     private boolean fullscreen;
     private String title="Browser";
     private String url="https://weblite.ca";
-    private JavascriptCallback javascriptCallback;
-    private Runnable onLoadCallback;
-    private static final String MSG_PREFIX = "WEBVIEW_MSG_98989***:";
+    private List<String> onBeforeLoad = new ArrayList<String>();
+    private Map<String,JavascriptCallback> bindings = new HashMap<String,JavascriptCallback>();
 
     WebView resizable(boolean b) {
         resizable = b;
@@ -35,7 +37,14 @@ public class WebView {
     }
     
     
-    
+    public WebView addOnBeforeLoad(String js) {
+        if (peer != 0) {
+            WebViewNative.webview_init(peer, js);
+        } else {
+            onBeforeLoad.add(js);
+        }
+        return this;
+    }
     
     
     
@@ -45,8 +54,8 @@ public class WebView {
     
     public WebView url(String url) {
         this.url = url;
-        if (peer != null) {
-            CWebView.INSTANCE.CgoWebViewEval(peer, "window.location.href='"+url+"'");
+        if (peer != 0) {
+            WebViewNative.webview_navigate(peer, url);
         }
         return this;
     }
@@ -57,25 +66,13 @@ public class WebView {
     
     public WebView title(String title) {
         this.title = title;
-        if (peer != null) {
-            CWebView.INSTANCE.CgoWebViewSetTitle(peer, title);
+        if (peer != 0) {
+            WebViewNative.webview_set_title(peer, title);
         }
         return this;
     }
-    
-    public WebView fullscreen(boolean fullscreen) {
-        this.fullscreen = fullscreen;
-        if (peer != null) {
-            CWebView.INSTANCE.CgoWebViewSetFullscreen(peer, fullscreen?1:0);
-        }
-        return this;
-                
-    }
-    
-    public boolean fullscreen() {
-        return fullscreen;
-    }
-    
+   
+  
     public WebView size(int w, int h) {
         this.w = w;
         this.h = h;
@@ -90,98 +87,70 @@ public class WebView {
         return h;
     }
     
+    private ArrayList heap = new ArrayList();
     
-    public WebView javascriptCallback(JavascriptCallback callback) {
-        this.javascriptCallback = callback;
+    public WebView addJavascriptCallback(String name, JavascriptCallback callback) {
+        if (peer == 0) {
+            bindings.put(name, callback);
+        } else {
+            bindings.put(name, callback);
+            WebViewNativeCallback fn = new WebViewNativeCallback() {
+                @Override
+                public void invoke(String arg2, long wv) {
+                    JavascriptCallback cb = bindings.get(name);
+                    if (cb != null) {
+                        cb.run(arg2);
+                    }
+                }
+            };
+            heap.add(fn);
+            WebViewNative.webview_bind(peer, name, fn, peer);
+        }
         return this;
     }
     
     public WebView eval(String js) {
-        CWebView.INSTANCE.CgoWebViewEval(peer, js);
+        WebViewNative.webview_eval(peer, js);
         return this;
     }
     
     public WebView injectCSS(String css) {
-        CWebView.INSTANCE.CgoWebViewInjectCSS(peer, css);
         return this;
     }
+
     
-    public JavascriptCallback javascriptCallback() {
-        return javascriptCallback;
-    }
-    
-    public WebView onLoad(Runnable runnable) {
-        onLoadCallback = runnable;
-        return this;
-    }
-    
-    public Runnable onLoad() {
-        return onLoadCallback;
-    }
+   
     
     public WebView dispatch(Runnable r) {
-        CWebView.INSTANCE.CgoWebViewDispatch(peer, new Callback() {
-
-            public void dispatch() {
-                r.run();
-            }
-        }, null);
+        heap.add(r);
+        WebViewNative.webview_dispatch(peer, () -> {
+            r.run();
+            heap.remove(r);
+        }, 0);
         return this;
     }
+    
     
     
     public void show() {
-        //System.out.println("About to show: "+w+","+h+", "+title+", "+url+", "+resizable);
-        peer = CWebView.INSTANCE.CgoWebViewCreate(w, h, title, url, resizable?1:0, 1, new CWebViewCallback() {
-            @Override
-            public void cwebviewcallback(Pointer webview, String arg) {
-                CWebView.INSTANCE.CgoWebViewDispatch(peer, new Callback() {
-
-                    public void dispatch() {
-                        
-                        if (arg.startsWith(MSG_PREFIX)) {
-                            String body = arg.substring(MSG_PREFIX.length());
-                            if (body.startsWith("url:")) {
-                                body = body.substring("url:".length());
-                                url = body;
-                                if (onLoadCallback != null) {
-                                    onLoadCallback.run();
-                                }
-                            }
-                            return;
-                        }
-                        if (javascriptCallback != null) {
-                            javascriptCallback.run(arg);
-                        }
-                    }
-                }, null);
-                
-            }
-        }, new CWebViewOnloadCallback() {
-            @Override
-            public void onLoad() {
-                 url = CWebView.INSTANCE.CgoWebViewURL(peer);
-                 if (onLoadCallback != null) {
-                     onLoadCallback.run();
-                 }
-                 CWebView.INSTANCE.CgoWebViewDispatch(peer, new Callback() {
-                    
-                    public void dispatch() {
-                        //CWebView.INSTANCE.CgoWebViewEval(peer, "window.external.invoke('"+MSG_PREFIX+"url:'+window.location.href)");
-                        
-                        //if (onLoadCallback != null) {
-                        //    onLoadCallback.run();
-                        //}
-                    }
-                }, null);
-            }
-        });
-        while (CWebView.INSTANCE.CgoWebViewLoop(peer, 1) == 0) {
-
+        peer = WebViewNative.webview_create(0, 0);
+        WebViewNative.webview_set_bounds(peer, 0, 0, w, h, 0);
+        for (String js : onBeforeLoad) {
+            WebViewNative.webview_init(peer, js);
+        }
+        WebViewNative.webview_set_title(peer, title);
+        for (final String key : bindings.keySet()) {
+            WebViewNativeCallback fn = (String arg2, long wv) -> {
+                JavascriptCallback cb = bindings.get(key);
+                if (cb != null) {
+                    cb.run(arg2);
                 }
-        
-        
+            };
+            heap.add(fn);
+            WebViewNative.webview_bind(peer, key, fn, peer);
+        }
+        WebViewNative.webview_navigate(peer, url);
+        WebViewNative.webview_run(peer);
     }
-    
-    
+
 }
