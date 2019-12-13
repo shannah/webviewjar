@@ -5,7 +5,6 @@
  */
 package ca.weblite.webview;
 
-import com.sun.jna.Platform;
 
 /**
  *

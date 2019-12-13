@@ -5,16 +5,6 @@
  */
 package ca.weblite.webview;
 
-import com.sun.jna.Callback;
-import com.sun.jna.Pointer;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-
 
 /**
  *
@@ -22,9 +12,6 @@ import java.util.logging.Logger;
  */
 public class WebViewTest {
   
-    
-    private static Pointer w;
-    
     public static void main(String[] args) throws Exception  {
         
         WebView wv = new WebView();
