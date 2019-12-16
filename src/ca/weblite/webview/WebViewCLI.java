@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- *
+ * A command-line wrapper for the {@link WebView}.
  * @author shannah
  */
 public class WebViewCLI {
@@ -38,6 +38,7 @@ public class WebViewCLI {
     private boolean oauth;
     private File oauthOutputFile;
     private String onLoad;
+    private boolean useMessageBoundaries;
     
     private void init() throws IOException {
         String u = oauth ? getFullUrl() : url;
@@ -51,13 +52,15 @@ public class WebViewCLI {
             webview.addOnBeforeLoad(onLoad);
         }
         if (port >= 0) {
-            WebviewSocketServer serve = new WebviewSocketServer(port, webview);
+            WebviewSocketServer serve = new WebviewSocketServer(port, webview)
+                    .useMessageBoundaries(useMessageBoundaries);
             new Thread(()->{
                 System.out.println("Listening on "+serve.getPort());
             }).start();
             
         } else {
-            WebViewServer ctrl = new WebViewServer(webview, System.in, System.out);
+            WebViewServer ctrl = new WebViewServer(webview, System.in, System.out)
+                    .useMessageBoundaries(useMessageBoundaries);
             
         }
         webview.show();
@@ -156,6 +159,9 @@ public class WebViewCLI {
                 oauth.onLoad += "\n" + val;
                 continue;
                 
+            }
+            if ("-useMessageBoundaries".equalsIgnoreCase(arg)) {
+                oauth.useMessageBoundaries = true;
             }
             if ("-onLoadFile".equalsIgnoreCase(arg)) {
                 File f = new File(val);

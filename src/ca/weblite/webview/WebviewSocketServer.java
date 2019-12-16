@@ -21,7 +21,7 @@ public class WebviewSocketServer implements AutoCloseable {
     private ServerSocket serverSock;
     private Thread serverThread;
     private ArrayList<WebViewSocket> sockets = new ArrayList<WebViewSocket>();
-    
+    private boolean useMessageBoundaries;
     public WebviewSocketServer(int port, WebView webview) {
         serverThread = new Thread(()->{
             try {
@@ -29,7 +29,8 @@ public class WebviewSocketServer implements AutoCloseable {
                 WebviewSocketServer.this.port = serverSock.getLocalPort();
                 Socket sock;
                 while ((sock = serverSock.accept()) != null) {
-                    WebViewSocket webSock = new WebViewSocket(sock, webview);
+                    WebViewSocket webSock = new WebViewSocket(sock, webview)
+                            .useMessageBoundaries(useMessageBoundaries);
                     sockets.add(webSock);
                 }
             } catch (IOException ex) {
@@ -38,6 +39,14 @@ public class WebviewSocketServer implements AutoCloseable {
 
         });
         serverThread.start();
+    }
+    
+    public WebviewSocketServer useMessageBoundaries(boolean use) {
+        useMessageBoundaries = use;
+        for (WebViewSocket sock : sockets) {
+            sock.useMessageBoundaries(use);
+        }
+        return this;
     }
 
     public int getPort() {

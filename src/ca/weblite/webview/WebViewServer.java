@@ -9,6 +9,7 @@ import ca.weblite.webview.WebView.JavascriptCallback;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -29,6 +30,7 @@ public class WebViewServer  implements AutoCloseable {
     private ExecutorService outputService = Executors.newSingleThreadExecutor();
     private Thread inputThread;
     private boolean closed;
+    private boolean useMessageBoundaries;
     
     public WebViewServer(WebView webview, InputStream input, OutputStream output) {
         this.webview = webview;
@@ -52,12 +54,23 @@ public class WebViewServer  implements AutoCloseable {
     private void initWebView() {
         //JavascriptCallback existingJSCallback = webview.javascriptCallback();
         webview.addJavascriptCallback("postMessageExt", arg->{
+            sendMessage(arg, useMessageBoundaries);
+        });
+        webview.addJavascriptCallback("postMessageExtWithBoundary", arg->{
+            sendMessage(arg, true);
+        });
+        webview.addJavascriptCallback("postMessageExtWithoutBoundary", arg->{
             sendMessage(arg, false);
         });
-        webview.addOnBeforeLoad("document.addEventListener('DOMContentLoaded', function(){postMessageExt({type:'event', name:'onload', url:window.location.href});});");
+        webview.addOnBeforeLoad("document.addEventListener('DOMContentLoaded', function(){postMessageExtWithoutBoundary('<<<EVENT:load '+encodeURIComponent(window.location.href)+' >>>');});");
         
     }
     
+    
+    public WebViewServer useMessageBoundaries(boolean use) {
+        useMessageBoundaries = use;
+        return this;
+    }
     
     
     
@@ -68,6 +81,7 @@ public class WebViewServer  implements AutoCloseable {
         String currentMessageBoundary="";
         StringBuilder currMessage = new StringBuilder();
         output.write("\r\n".getBytes());
+        output.flush();
         while (scanner.hasNextLine()) {
             String line = scanner.nextLine();
             //System.out.println("Read line "+line);
@@ -113,10 +127,14 @@ public class WebViewServer  implements AutoCloseable {
         } else {
             message += "\n";
         }
+
         String fMessage = message;
         outputService.execute(()->{
             try {
+                
                 output.write(fMessage.getBytes("UTF-8"));
+                output.flush();
+                
             } catch (IOException ex) {
                 ex.printStackTrace(System.err);
             }

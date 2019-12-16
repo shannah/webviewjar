@@ -1,24 +1,52 @@
-/*
- * To change this license header, choose License Headers in Project Properties.
- * To change this template file, choose Tools | Templates
- * and open the template in the editor.
+/**
+ *
+ * MIT License
+ *
+ * Copyright (c) 2019 Steve Hannah
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package ca.weblite.webview;
 
-//import com.sun.jna.Callback;
-//import com.sun.jna.Pointer;
-import java.io.IOException;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- *
+ * Encapsulates a WebBrowser window.  This class will interface directly with 
+ * the ZSerge WebView via JNI.  I.e. It will load a the webview in the current 
+ * process.  Currently running in-process doesn't play nice with other GUI toolkits
+ * because it wants to run on the main thread, and it wants to run its own event 
+ * loop.   There may be a way to make it play nice with existing toolkits like Swing,
+ * but in the mean time, it is probably easier just to use the {@link WebViewCLIClient}
+ * to launch the WebView in its own child process.
  * @author shannah
  */
 public class WebView {
+    /**
+     * The native pointer reference.
+     */
     private long peer;
+    
+    
     private int w=800, h=600;
     private boolean resizable=true;
     private boolean fullscreen;
@@ -27,16 +55,33 @@ public class WebView {
     private List<String> onBeforeLoad = new ArrayList<String>();
     private Map<String,JavascriptCallback> bindings = new HashMap<String,JavascriptCallback>();
 
-    WebView resizable(boolean b) {
+    /**
+     * Make the webview window resizable.
+     * @param b True to make the webview window resizable.
+     * @return 
+     */
+    public WebView resizable(boolean b) {
         resizable = b;
         return this;
     }
     
+    /**
+     * Interface for callbacks from javascript.
+     */
     public static interface JavascriptCallback {
+        
+        /**
+         * Run a callback from Javascript.  
+         * @param arg 
+         */
         public void run(String arg);
     }
     
-    
+    /**
+     * Add Javascript code to be run in the webview when each page loads.
+     * @param js
+     * @return 
+     */
     public WebView addOnBeforeLoad(String js) {
         if (peer != 0) {
             WebViewNative.webview_init(peer, js);
@@ -47,11 +92,18 @@ public class WebView {
     }
     
     
-    
+    /**
+     * Creates a new webview.
+     */
     public WebView() {
         
     }
     
+    /**
+     * Sets the URL of the webview.
+     * @param url The url.
+     * @return 
+     */
     public WebView url(String url) {
         this.url = url;
         if (peer != 0) {
@@ -60,10 +112,19 @@ public class WebView {
         return this;
     }
     
+    /**
+     * Gets the webview url.
+     * @return 
+     */
     public String url() {
         return url;
     }
     
+    /**
+     * Set the window title.
+     * @param title
+     * @return 
+     */
     public WebView title(String title) {
         this.title = title;
         if (peer != 0) {
@@ -73,22 +134,47 @@ public class WebView {
     }
    
   
+    /**
+     * Set the window size.
+     * @param w
+     * @param h
+     * @return 
+     */
     public WebView size(int w, int h) {
         this.w = w;
         this.h = h;
         return this;
     }
     
+    /**
+     * Get the window width.
+     * @return 
+     */
     public int w() {
         return w;
     }
     
+    /**
+     * Get the window height.
+     * @return 
+     */
     public int h() {
         return h;
     }
     
+    /**
+     * Heap used so that callbacks don't get garbage collected by JVM while waiting
+     * to be called by native code.
+     */
     private ArrayList heap = new ArrayList();
     
+    /**
+     * Adds a javascript callback function.  This function will be accessible in Javascript
+     * via window.name.
+     * @param name THe name of the callback.
+     * @param callback The callback to be run.
+     * @return 
+     */
     public WebView addJavascriptCallback(String name, JavascriptCallback callback) {
         if (peer == 0) {
             bindings.put(name, callback);
@@ -109,18 +195,23 @@ public class WebView {
         return this;
     }
     
+    /**
+     * Execute javascript.
+     * @param js Javscript to run
+     * @return 
+     */
     public WebView eval(String js) {
         WebViewNative.webview_eval(peer, js);
         return this;
     }
     
-    public WebView injectCSS(String css) {
-        return this;
-    }
-
     
    
-    
+    /**
+     * Dispatch on the WebView event thread.
+     * @param r 
+     * @return 
+     */
     public WebView dispatch(Runnable r) {
         heap.add(r);
         WebViewNative.webview_dispatch(peer, () -> {
@@ -131,7 +222,10 @@ public class WebView {
     }
     
     
-    
+    /**
+     * Shows the webview.  This will start the webview event loop, and it will
+     * block execution.
+     */
     public void show() {
         peer = WebViewNative.webview_create(0, 0);
         WebViewNative.webview_set_bounds(peer, 0, 0, w, h, 0);

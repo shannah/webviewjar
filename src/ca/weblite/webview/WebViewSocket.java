@@ -21,6 +21,11 @@ public class WebViewSocket implements AutoCloseable {
         this.controller = new WebViewServer(webview, sock.getInputStream(), sock.getOutputStream());
                
     }
+    
+    public WebViewSocket useMessageBoundaries(boolean useMessageBoundaries) {
+        controller.useMessageBoundaries(useMessageBoundaries);
+        return this;
+    }
 
     @Override
     public void close() throws Exception {

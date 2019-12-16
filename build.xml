@@ -85,7 +85,12 @@
             <arg value="build-linux.sh"/>
         </exec>
     </target>
-    <target name="shaded-jar" depends="jar" description="Create shaded jar">
+    <target name="-post-jar" depends="shaded-jar">
+        <delete file="${dist.jar}"/>
+        <copy file="dist/${application.title}-shaded.jar" tofile="${dist.jar}"/>
+        <delete file="dist/${application.title}-shaded.jar"/>
+    </target>
+    <target name="shaded-jar" description="Create shaded jar">
         
         <jar destfile="dist/${application.title}-shaded.jar">
             <manifest>
