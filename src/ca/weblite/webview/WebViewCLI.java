@@ -20,7 +20,7 @@ import java.util.Set;
  * A command-line wrapper for the {@link WebView}.
  * @author shannah
  */
-public class WebViewCLI {
+public class WebViewCLI implements AutoCloseable {
     private int width=800;
     private int height=600;
     private boolean fullscreen = false;
@@ -39,7 +39,7 @@ public class WebViewCLI {
     private File oauthOutputFile;
     private String onLoad;
     private boolean useMessageBoundaries;
-    
+    private WebViewServer server;
     private void init() throws IOException {
         String u = oauth ? getFullUrl() : url;
         webview = new WebView()
@@ -59,11 +59,12 @@ public class WebViewCLI {
             }).start();
             
         } else {
-            WebViewServer ctrl = new WebViewServer(webview, System.in, System.out)
+            server = new WebViewServer(webview, System.in, System.out)
                     .useMessageBoundaries(useMessageBoundaries);
             
         }
         webview.show();
+
                 
     }
     
@@ -150,6 +151,14 @@ public class WebViewCLI {
             }
             if ("-oauth".equals(arg)) {
                 oauth.oauth = true;
+                continue;
+            }
+            if ("-w".equals(arg) || "-width".equals(arg)) {
+                oauth.width = Integer.parseInt(val);
+                continue;
+            }
+            if ("-h".equals(arg) || "-height".equals(arg)) {
+                oauth.height = Integer.parseInt(val);
                 continue;
             }
             if ("-onLoad".equalsIgnoreCase(arg)) {
@@ -256,9 +265,10 @@ public class WebViewCLI {
         if (restartJVM(args)) {
             return;
         }
-        WebViewCLI oauth = parseParams(args);
-        try {
+        
+        try (WebViewCLI oauth = parseParams(args)) {
             oauth.init();
+            System.out.println("Fin");
         } catch (Exception ex) {
             ex.printStackTrace(System.err);
         }
@@ -380,6 +390,15 @@ public class WebViewCLI {
             }
         }
         return retVal;
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (server != null) {
+            try {
+                server.close();
+            } catch (Exception ex){}
+        }
     }
     
     private static class Util {

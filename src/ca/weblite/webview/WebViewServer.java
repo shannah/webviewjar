@@ -22,7 +22,7 @@ import java.util.concurrent.Executors;
  * @author shannah
  */
 public class WebViewServer  implements AutoCloseable {
-    
+    private Scanner inputScanner;
     private InputStream input;
     private OutputStream output;
     private String messageBoundary = "Boundary"+System.currentTimeMillis();
@@ -40,11 +40,13 @@ public class WebViewServer  implements AutoCloseable {
         inputThread = new Thread(()->{
             try {
                 listen();
+                
             } catch (IOException ex) {
                 if (!closed) {
                     ex.printStackTrace(System.err);
                 }
             }
+            System.out.println("Finished lisening");
         });
         inputThread.start();
         
@@ -77,12 +79,25 @@ public class WebViewServer  implements AutoCloseable {
     
     private void listen() throws IOException {
         Scanner scanner = new Scanner(input, "UTF-8");
+        inputScanner = scanner;
         int state = 0;
         String currentMessageBoundary="";
         StringBuilder currMessage = new StringBuilder();
         output.write("\r\n".getBytes());
         output.flush();
-        while (scanner.hasNextLine()) {
+        while (true) {
+            if (closed) {
+                break;
+            }
+            if (input.available() <= 0) {
+                try {
+                    Thread.sleep(30l);
+                    continue;
+                } catch (Exception ex){
+                    
+                }
+            }
+            while (scanner.hasNextLine()) {
             String line = scanner.nextLine();
             //System.out.println("Read line "+line);
             switch (state) {
@@ -118,6 +133,8 @@ public class WebViewServer  implements AutoCloseable {
                 }
             }
         }
+        }
+        
         scanner.close();
     }
     
@@ -153,8 +170,19 @@ public class WebViewServer  implements AutoCloseable {
     @Override
     public void close() throws Exception {
         closed = true;
-        output.close();
-        input.close();
+        if (output != null) {
+            try {
+                output.close();
+            } catch (Throwable t){}
+        
+        }
+        
+        if (input != null) {
+            try {
+                input.close();
+            } catch (Throwable t) {}
+        }
+        
         outputService.shutdown();
     }
     
