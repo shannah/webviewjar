@@ -90,6 +90,7 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1dispatch
         (env)->CallVoidMethod(callbackInstance, run);
         env->DeleteGlobalRef(callbackInstance);
         env->DeleteGlobalRef(callbacksClass);
+        (jvm)->DetachCurrentThread();
     });
 }
 
@@ -188,6 +189,7 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1bind
         
         (env)->CallVoidMethod(fnInstance, invoke, (env)->NewStringUTF(strArg));
         //env->DeleteGlobalRef(fnInstance);
+        (jvm)->DetachCurrentThread();
         
         return s;
     });

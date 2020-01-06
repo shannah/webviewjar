@@ -471,7 +471,7 @@ public:
     gtk_widget_show_all(m_window);
   }
   void run() { gtk_main(); }
-  void terminate() { gtk_main_quit(); }
+  void terminate() { gtk_main_quit(); exit(0);}
   void dispatch(std::function<void()> f) {
     g_idle_add_full(G_PRIORITY_HIGH_IDLE, (GSourceFunc)([](void *f) -> int {
                       (*static_cast<dispatch_fn_t *>(f))();
@@ -488,11 +488,13 @@ public:
   void set_size(int width, int height, bool resizable) {
     gtk_window_set_resizable(GTK_WINDOW(m_window), !!resizable);
     if (resizable) {
-      gtk_window_set_default_size(GTK_WINDOW(m_window), width, height);
+      gtk_window_resize(GTK_WINDOW(m_window), width, height);
     } else {
       gtk_widget_set_size_request(m_window, width, height);
     }
-    gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
+    gtk_widget_hide(m_window);
+    gtk_window_set_position(GTK_WINDOW(m_window), GTK_WIN_POS_CENTER);
+    gtk_widget_show_all(m_window);
   }
 
   void navigate(const char *url) {
