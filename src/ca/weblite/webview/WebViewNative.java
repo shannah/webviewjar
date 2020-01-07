@@ -18,6 +18,9 @@ public class WebViewNative {
     
     static {
         try {
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                NativeLoader.loadLibrary("WebView2Loader");
+            }
             NativeLoader.loadLibrary("webview");
         } catch (IOException ex) {
             Logger.getLogger(WebViewNative.class.getName()).log(Level.SEVERE, null, ex);
