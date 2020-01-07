@@ -95,10 +95,24 @@ This should work on Mac, Linux, and Windows.
 ~~~
 git clone https://github.com/shannah/webviewjar
 cd webviewjar
-ant shaded-jar
+ant jar
 ~~~
 
-This will create both dist/WebView.jar and dist/WebView-shaded.jar.  dist/WebView.jar just contains the library.  WebView-Shaded.jar includes all dependencies, and can be run as an executable jar.
+This will create dist/WebView.jar, which can be run as an executable jar.
+
+### Troubleshooting
+
+ANT requires that the `platforms.JDK_1.8.home` system property is set to your JAVA_HOME.  If it complains about this, you can fix the issue by changing the `ant jar` command, above, to `ant jar -Dplatforms.JDK_1.8.home="$JAVA_HOME"`.
+
+### Rebuilding Native Libs
+
+The repo comes with pre-built native libs in the src/windows_32, src/windows_64, src/osx_64, and src/linux_64.  If you want to make changes to these native libs, then the following information may be of use to you.
+
+1. Use the `build-xxx.sh` (where xxx is your current platform) scripts to rebuild the native sources, and copy them into the appropriate place in the src directory.
+2. Mac and linux native sources are located in the src_c directory.  Windows native sources are in the windows directory.
+3. On Windows, you'll need to have Visual Studio installed (I use VS 2019, but earlier versions probably work).  Additionally, I use git bash on Windows, which is why the build-windows.sh is a bash script, and not a .bat script.
+
+
 
 ## License
 
