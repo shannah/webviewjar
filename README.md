@@ -15,6 +15,35 @@ $ java -jar WebView.jar http://www.example.com
 
 This will open the web browser in its own window pointing to http://www.example.com.
 
+**CLI Usage Instructions**
+
+~~~~
+Usage: java -jar WebView.jar [OPTIONS] <url>
+
+  <url> - A URL to a webpage to show in the webview.  
+Note: You can use a data url here.
+
+Options:
+  -title <Window Title>
+  -w <window width px>
+  -h <window height px>
+  -onLoad <js to run on page load>
+  -onLoadFile <path to js file to run on page load>
+  -useMessageBoundaries    Use message boundaries for wrapping messages from the webview.   Makes it easier to parse.
+
+Examples:
+
+java -jar WebView.jar https://example.com
+  Opens webview with starting page https://example.com
+
+java -jar WebView.jar "data:text/html,%3Chtml%3Ehello%3C%2Fhtml%3E"
+  Opens webview that says 'hello html'
+
+java -jar WebView.jar https://google.com \
+   -onLoad "window.addEventListener('load', function(){postMessageExt('loaded '+location.href)})"
+  Opens a webview, and prints out URL of each page on window load event.
+~~~~
+
 ### Interacting with the Browser Environment
 
 You can interact with the browser environment by typing into the console while the browser is running.  The browser listens on STDIN, for any input, and it will evaluate any input as Javascript in the context of the current page.  E.g. Type "alert('foo')" then `[ENTER]` to open an alert popup.  
