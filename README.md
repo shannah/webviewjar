@@ -66,7 +66,7 @@ NOTE:  If you give it an empty boundary, then it will simply use a blank line as
 There are two ways get the browser to communicate back to the outside world:
 
 1. The onLoad callback.  Whenever the user nagivates to a new page, it will output `loaded [URL]` to STDOUT.  E.g. If you navigate to google.com, then it will output `loaded https://google.com` to STDOUT.
-2. Call `window.external.invoke("some message")`.  This will cause the browser print "some message" to STDOUT.  All messages of this kind are wrapped with beginning and ending boundaries to make the output easier to parse, in case you are writing a program to interact with the browser.
+2. Call `window.postMessageExt("some message")`.  This will cause the browser print "some message" to STDOUT.  All messages of this kind are wrapped with beginning and ending boundaries to make the output easier to parse, in case you are writing a program to interact with the browser.
 
 Here is an example of a session, where I load google.com, and then get its page title via `window.external.invoke()`:
 
