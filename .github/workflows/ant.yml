@@ -30,6 +30,8 @@ jobs:
       uses: actions/setup-java@v1
       with:
         java-version: 1.8
+    - name: "Install Ant"
+      run: brew install ant
     - name: Build with Ant
       run: ant -Dplatforms.JDK_1.8.home="$JAVA_HOME" jar
     - name: Run Unit Tests 
