@@ -98,7 +98,51 @@ public class WebViewCLI implements AutoCloseable {
     }
     
     
+    private static void help() {
+        
+        StringBuilder sb = new StringBuilder();
+        String endl = System.getProperty("line.separator");
+        sb.append("WebViewJar v1.0").append(endl)
+                .append("Created by Steve Hannah <https://sjhannah.com>").append(endl)
+                .append("Based on Webview by Serge Zaitsev <https://github.com/zserge/webview>").append(endl)
+                .append("Github: https://github.com/shannah/webviewjar").append(endl)
+                .append(endl)
+                .append("Synopsis: Cross-platform WebView that can be opened and controlled via CLI or as JavaAPI.").append(endl).append(endl);
+        sb.append("Usage: java -jar WebView.jar [OPTIONS] <url>").append(endl)
+                .append(endl)
+                .append("  <url> - A URL to a webpage to show in the webview.  ").append(endl)
+                .append("Note: You can use a data url here.").append(endl)
+                .append(endl)
+                .append("Options:").append(endl)
+                .append("  -title <Window Title>").append(endl)
+                .append("  -w <window width px>").append(endl)
+                .append("  -h <window height px>").append(endl)
+                .append("  -onLoad <js to run on page load>").append(endl)
+                .append("  -onLoadFile <path to js file to run on page load>").append(endl)
+                .append("  -useMessageBoundaries    Use message boundaries for wrapping messages from the webview.   Makes it easier to parse.").append(endl)
+                .append(endl)
+                .append("Examples:").append(endl)
+                .append(endl)
+                .append("java -jar WebView.jar https://example.com").append(endl)
+                .append("  Opens webview with starting page https://example.com").append(endl)
+                .append(endl)
+                .append("java -jar WebView.jar \"data:text/html,%3Chtml%3Ehello%3C%2Fhtml%3E\"").append(endl)
+                .append("  Opens webview that says 'hello html'").append(endl)
+                .append(endl)
+                .append("java -jar WebView.jar https://google.com \\").append(endl)
+                .append("   -onLoad \"window.addEventListener('load', function(){postMessageExt('loaded '+location.href)})\"").append(endl)
+                .append("  Opens a webview, and prints out URL of each page on window load event.").append(endl)
+                ;
+       System.out.println(sb.toString());
+        
+        
+    }
+    
     private static WebViewCLI parseParams(String[] args) {
+        if (args.length < 1) {
+            help();
+            System.exit(1);
+        }
         String[] flags = extractFlags(args);
         //System.out.println("flags="+Arrays.toString(flags));
         args = extractArgs(args);
