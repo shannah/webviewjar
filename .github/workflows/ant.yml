@@ -13,11 +13,9 @@ jobs:
       uses: actions/setup-java@v1
       with:
         java-version: 1.8
-    - name: Install XVFB
-      run: sudo apt-get install xvfb
     - name: Build with Ant
       run: ant -Dplatforms.JDK_1.8.home="$JAVA_HOME" jar
-    - name: Start XVFB
-      run: export DISPLAY=:99.0 && sh -e /etc/init.d/xvfb start
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install libwebkit2gtk-4.0-dev xvfb -y
     - name: Run Unit Tests 
-      run: ant -Dplatforms.JDK_1.8.home="$JAVA_HOME" test
+      run: xvfb-run ant -Dplatforms.JDK_1.8.home="$JAVA_HOME" test
