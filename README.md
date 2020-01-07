@@ -85,6 +85,51 @@ NOTE: The `show()` method will start a blocking event loop.
 
 WARNING: Currently the WebView is picky about being started on the main application thread.  On Mac you may need to add the "-XstartOnFirstThread" flag in the JVM.
 
+## Using Java API from Swing, JavaFX, or other UI Toolkit
+
+The WebView class cannot be used from Swing, JavaFX, or any other existing UI toolkit because it starts its own event loop.  If you want to make use of the WebView from within such an app, you'll need to use the WebViewCLIClient class, which provides an interface to create and manage a WebView which runs inside its own subprocess.
+
+See the [Swing Demo](demos/WebViewSwingDemo/README.md) for a full example of this.
+
+The basics are:
+
+~~~~
+
+// Opening the webview
+WebViewCLIClient webview = (WebViewCLIClient)new WebViewCLIClient.Builder()
+    .url("https://www.codenameone.com")
+    .title("Codename One")
+    .size(800, 600)
+    .build();
+    
+// Adding a load listener (fired whenever a page loads)
+webview.addLoadListener(evt->{
+    System.out.println("Loaded "+evt.getURL());
+});
+
+// Adding a message listener (fired whenever any js calls window.postMessageExt(msg))
+webview.addMessageListener(evt->{
+    System.out.println(evt.getMessage());
+});
+
+// Evaluate javascript on the current page.  Implicit callback() method
+// allows you to return result in CompetableFuture.
+webview.eval("callback(window.location.href)")
+    .thenAccept(str->{
+        System.out.println("Current URL is "+str);
+    });
+    
+    
+
+    
+// Closing the webview later
+webview.close();
+~~~~
+
+
+    
+
+
 #### Demos
 
 1. [Swing Demo](demos/WebViewSwingDemo/README.md) - A simple demo showing how to create and control a WebView from a Swing App.
