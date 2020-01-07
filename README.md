@@ -4,6 +4,20 @@ This is a Java port of the fantastic, tiny, light-weight [WebView](https://githu
 
 It is packaged into an executable Jar file so that you can run it as a CLI self-contained process or as a Java library inside your current process.
 
+## Synopsis
+
+Cross-platform WebView that can be opened and controlled via CLI or as JavaAPI.
+
+## Installation
+
+Download [WebView.jar](bin/WebView.jar)
+
+This jar can be run directly as an executable jar file (e.g. `java -jar WebView.jar [OPTIONS]`), or using the Java API by adding the jar to your classpath.
+
+## Platform Support
+
+Runs on Windows (32 or 64), Linux (64), and Mac.  Other platforms (e.g. Linux 32) can be supported.  Simply need to build the native libs for that platform.
+
 ## Running in Separate Process
 
 
