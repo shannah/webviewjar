@@ -85,6 +85,10 @@ public class WebViewClient implements AutoCloseable {
         public OnLoadWebEvent(String url) {
             this.url = url;
         }
+        
+        public String getURL() {
+            return url;
+        }
     }
     
     public class MessageEvent extends WebEvent {
@@ -190,7 +194,7 @@ public class WebViewClient implements AutoCloseable {
         String js = _js;
         js += "\npostMessageExt('hello there');\n";
         if (!js.contains("complete(")) {
-             js += "\n" + "complete('saasfldfksjd');";
+             js += "\n" + "complete('null');";
         }
         js = "try { "+js+"} catch(e) { postMessageExt({error:''+e, errorType:'javascriptError', content: e});}";
         String requestId = UUID.randomUUID().toString();

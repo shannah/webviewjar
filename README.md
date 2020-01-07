@@ -85,6 +85,11 @@ NOTE: The `show()` method will start a blocking event loop.
 
 WARNING: Currently the WebView is picky about being started on the main application thread.  On Mac you may need to add the "-XstartOnFirstThread" flag in the JVM.
 
+#### Demos
+
+1. [Swing Demo](demos/WebViewSwingDemo/README.md) - A simple demo showing how to create and control a WebView from a Swing App.
+2. [Minimal Demo](demos/WebViewMinimalDemo/README.md) - A simple demo that only launches a WebView on the main thread.
+
 ## Supported Platforms
 
 This should work on Mac, Linux, and Windows.

@@ -69,7 +69,10 @@ public class WebViewCLIClient extends WebViewClient {
         ArrayList<String> jvmArgs = new ArrayList<String>();
 
         jvmArgs.add(jvmPath);
-        jvmArgs.add("-XstartOnFirstThread");
+        if (osName.toLowerCase().contains("mac")) {
+            jvmArgs.add("-XstartOnFirstThread");
+            
+        }
         jvmArgs.addAll(inputArguments);
         jvmArgs.add("-cp");
         jvmArgs.add(classpath);
@@ -80,6 +83,7 @@ public class WebViewCLIClient extends WebViewClient {
 
         try {
            ProcessBuilder processBuilder = new ProcessBuilder(jvmArgs);
+           
            process = processBuilder.start();
            InputStream input = process.getInputStream();
            OutputStream output = process.getOutputStream();
