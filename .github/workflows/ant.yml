@@ -16,6 +16,6 @@ jobs:
     - name: Install XVFB
       run: sudo apt-get install xvfb
     - name: Build with Ant
-      run: ant jar
+      run: ant -Dplatforms.JDK_1.8.home="$JAVA_HOME" jar
     - name: Run Unit Tests
-      run: xvfb-run --auto-servernum ant test
+      run: xvfb-run --auto-servernum ant -Dplatforms.JDK_1.8.home="$JAVA_HOME" test
