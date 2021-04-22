@@ -1,19 +1,18 @@
 /**
- *
  * MIT License
- *
+ * <p>
  * Copyright (c) 2019 Steve Hannah
- *
+ * <p>
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- *
+ * <p>
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- *
+ * <p>
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -45,42 +44,42 @@ public class WebView {
      * The native pointer reference.
      */
     private long peer;
-    
-    
-    private int w=800, h=600;
-    private boolean resizable=true;
+
+
+    private int w = 800, h = 600;
+    private boolean resizable = true;
     private boolean fullscreen;
-    private String title="Browser";
-    private String url="https://weblite.ca";
+    private String title = "Browser";
+    private String url = "https://weblite.ca";
     private List<String> onBeforeLoad = new ArrayList<String>();
-    private Map<String,JavascriptCallback> bindings = new HashMap<String,JavascriptCallback>();
+    private Map<String, JavascriptCallback> bindings = new HashMap<String, JavascriptCallback>();
+    /**
+     * Heap used so that callbacks don't get garbage collected by JVM while waiting
+     * to be called by native code.
+     */
+    private ArrayList heap = new ArrayList();
+
+    /**
+     * Creates a new webview.
+     */
+    public WebView() {
+
+    }
 
     /**
      * Make the webview window resizable.
      * @param b True to make the webview window resizable.
-     * @return 
+     * @return
      */
     public WebView resizable(boolean b) {
         resizable = b;
         return this;
     }
-    
-    /**
-     * Interface for callbacks from javascript.
-     */
-    public static interface JavascriptCallback {
-        
-        /**
-         * Run a callback from Javascript.  
-         * @param arg 
-         */
-        public void run(String arg);
-    }
-    
+
     /**
      * Add Javascript code to be run in the webview when each page loads.
      * @param js
-     * @return 
+     * @return
      */
     public WebView addOnBeforeLoad(String js) {
         if (peer != 0) {
@@ -90,19 +89,11 @@ public class WebView {
         }
         return this;
     }
-    
-    
-    /**
-     * Creates a new webview.
-     */
-    public WebView() {
-        
-    }
-    
+
     /**
      * Sets the URL of the webview.
      * @param url The url.
-     * @return 
+     * @return
      */
     public WebView url(String url) {
         this.url = url;
@@ -111,19 +102,19 @@ public class WebView {
         }
         return this;
     }
-    
+
     /**
      * Gets the webview url.
-     * @return 
+     * @return
      */
     public String url() {
         return url;
     }
-    
+
     /**
      * Set the window title.
      * @param title
-     * @return 
+     * @return
      */
     public WebView title(String title) {
         this.title = title;
@@ -132,48 +123,42 @@ public class WebView {
         }
         return this;
     }
-   
-  
+
+
     /**
      * Set the window size.
      * @param w
      * @param h
-     * @return 
+     * @return
      */
     public WebView size(int w, int h) {
         this.w = w;
         this.h = h;
         return this;
     }
-    
+
     /**
      * Get the window width.
-     * @return 
+     * @return
      */
     public int w() {
         return w;
     }
-    
+
     /**
      * Get the window height.
-     * @return 
+     * @return
      */
     public int h() {
         return h;
     }
-    
-    /**
-     * Heap used so that callbacks don't get garbage collected by JVM while waiting
-     * to be called by native code.
-     */
-    private ArrayList heap = new ArrayList();
-    
+
     /**
      * Adds a javascript callback function.  This function will be accessible in Javascript
      * via window.name.
      * @param name THe name of the callback.
      * @param callback The callback to be run.
-     * @return 
+     * @return
      */
     public WebView addJavascriptCallback(String name, JavascriptCallback callback) {
         if (peer == 0) {
@@ -194,23 +179,21 @@ public class WebView {
         }
         return this;
     }
-    
+
     /**
      * Execute javascript.
      * @param js Javscript to run
-     * @return 
+     * @return
      */
     public WebView eval(String js) {
         WebViewNative.webview_eval(peer, js);
         return this;
     }
-    
-    
-   
+
     /**
      * Dispatch on the WebView event thread.
-     * @param r 
-     * @return 
+     * @param r
+     * @return
      */
     public WebView dispatch(Runnable r) {
         heap.add(r);
@@ -220,8 +203,7 @@ public class WebView {
         }, 0);
         return this;
     }
-    
-    
+
     /**
      * Shows the webview.  This will start the webview event loop, and it will
      * block execution.
@@ -245,6 +227,19 @@ public class WebView {
         }
         WebViewNative.webview_navigate(peer, url);
         WebViewNative.webview_run(peer);
+    }
+
+
+    /**
+     * Interface for callbacks from javascript.
+     */
+    public static interface JavascriptCallback {
+
+        /**
+         * Run a callback from Javascript.
+         * @param arg
+         */
+        public void run(String arg);
     }
 
 }
