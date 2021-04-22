@@ -3,49 +3,59 @@
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-package ca.weblite.webview;
 
-import java.util.Scanner;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import static junit.framework.Assert.assertEquals;
-import static junit.framework.Assert.fail;
+import ca.weblite.webview.WebView;
+import ca.weblite.webview.WebViewCLIClient;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import static junit.framework.Assert.assertEquals;
+
 
 /**
- *
  * @author shannah
  */
 public class WebViewCLIClientTest {
     WebViewCLIClient client;
+
     public WebViewCLIClientTest() {
     }
-    
+
+    public static void main(String[] args) {
+
+        WebView webview = new WebView()
+                .size(800, 600)
+                .title("Test")
+                .resizable(true)
+                .url("https://theoryofgeek.com/")
+                .addJavascriptCallback("callback", x ->
+                {
+                    System.out.println(x);
+                });
+
+        webview.show();
+    }
+
     @Before
     public void setUp() {
-        client = (WebViewCLIClient)new WebViewCLIClient.Builder()
+        client = (WebViewCLIClient) new WebViewCLIClient.Builder()
                 .url("http://solutions.weblite.ca")
                 .build();
-        
-        
-        
+
+
     }
-    
-    
-    
-    
 
     public void tearDown() {
         try {
             client.close();
-        } catch (Exception ex){}
+        } catch (Exception ex) {
+        }
     }
 
-    
-    
     @Test
     public void testEval() throws InterruptedException, ExecutionException, TimeoutException {
         System.out.println("eval");
@@ -54,25 +64,5 @@ public class WebViewCLIClientTest {
         String title = client.eval("complete(document.title)").get(5000, TimeUnit.MILLISECONDS);
         assertEquals("\"Web Lite Solutions Corp. | Vancouver, British Columbia, Canada\"", title);
     }
-    
-    public static void main(String[] args) throws Exception {
-         WebViewCLIClient client = (WebViewCLIClient)new WebViewCLIClient.Builder()
-                .url("http://solutions.weblite.ca")
-                .build();
-        Thread inputThread = new Thread(()->{
-            Scanner scanner = new Scanner(System.in);
-            while (scanner.hasNextLine()) {
-                client.eval(scanner.nextLine()).thenRun(()->{
-                    System.out.println("[DONE]");
-                });
-            }
-        });
-        
-        client.addMessageListener(evt->{
-            System.out.println("Received message: "+evt.getMessage());
-        });
-        inputThread.start();
-        
-    }
-    
+
 }
