@@ -54,7 +54,7 @@ public class WebViewCLIClientTest {
     @Timeout(15000)
     public void testEval() throws InterruptedException, ExecutionException, TimeoutException {
         client.ready().get(14999, TimeUnit.MILLISECONDS);
-        String title = client.eval("complete(document.title)").get(5000, TimeUnit.MILLISECONDS);
+        String title = client.eval("complete(document.title)").get(15000, TimeUnit.MILLISECONDS);
         assertThat(title).contains("webviewjar");
     }
 
