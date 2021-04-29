@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="WebViewCLIClientTest" type="Application" factoryName="Application" nameIsGenerated="true">
-    <option name="MAIN_CLASS_NAME" value="WebViewCLIClientTest" />
+  <configuration default="false" name="ca.weblite.webview.test.WebViewCLIClientTest" type="Application" factoryName="Application" nameIsGenerated="true">
+    <option name="MAIN_CLASS_NAME" value="ca.weblite.webview.test.WebViewCLIClientTest" />
     <module name="webviewjar" />
     <option name="VM_PARAMETERS" value=" -XstartOnFirstThread" />
     <method v="2">
