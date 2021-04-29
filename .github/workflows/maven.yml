@@ -7,13 +7,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Cache Maven packages
-      uses: actions/cache@v2
-      with:
-        path: ~/.m2
-        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-        restore-keys: ${{ runner.os }}-m2
-          - name: Build with Maven
-            run: mvn -B clean test --file pom.xml
+        uses: actions/cache@v2
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+            - name: Build with Maven
+              run: mvn -B clean test --file pom.xml
   build-macos-test:
     runs-on: macos-latest
     steps:
