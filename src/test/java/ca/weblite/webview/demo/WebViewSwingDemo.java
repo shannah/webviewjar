@@ -1,9 +1,8 @@
-/*
+package ca.weblite.webview.demo;/*
  * To change this license header, choose License Headers in Project Properties.
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-package ca.weblite.webview.demos;
 
 import ca.weblite.webview.WebViewCLIClient;
 import ca.weblite.webview.WebViewClient.EvalRequest;
@@ -14,7 +13,6 @@ import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JScrollPane;
-import javax.swing.JTextArea;
 import javax.swing.JTextPane;
 
 /**
@@ -108,7 +106,6 @@ public class WebViewSwingDemo implements Runnable {
         
         view.frame.pack();
         view.frame.setVisible(true);
-        
     }
     
 }

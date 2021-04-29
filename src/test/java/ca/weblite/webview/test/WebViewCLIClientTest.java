@@ -1,3 +1,5 @@
+package ca.weblite.webview.test;
+
 import ca.weblite.webview.WebView;
 import ca.weblite.webview.WebViewCLIClient;
 import org.junit.jupiter.api.AfterEach;

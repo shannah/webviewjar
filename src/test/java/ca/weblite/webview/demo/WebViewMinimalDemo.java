@@ -1,9 +1,8 @@
-/*
+package ca.weblite.webview.demo;/*
  * To change this license header, choose License Headers in Project Properties.
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-package ca.weblite.webview.demos.minimal;
 
 import ca.weblite.webview.WebView;
 import ca.weblite.webview.WebViewCLI;
