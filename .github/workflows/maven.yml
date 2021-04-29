@@ -18,7 +18,7 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
       - name: Build with Maven
-        run: mvn -B clean test
+        run: mvn -B clean test --file ${{ github.workspace }}\pom.xml
   build-macos-test:
     runs-on: macos-latest
     steps:
@@ -34,7 +34,7 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
       - name: Test macOS Maven
-        run: mvn -B clean test
+        run: mvn -B clean test --file ${{ github.workspace }}/pom.xml
   build-linux-test:
     runs-on: ubuntu-latest
     steps:
@@ -50,7 +50,7 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
       - name: Test linux Maven
-        run: mvn -B clean test
+        run: mvn -B clean test --file ${{ github.workspace }}/pom.xml
   build-release:
     runs-on: windows-latest
     steps:
@@ -66,7 +66,7 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
       - name: Build with Maven
-        run: mvn -B clean install
+        run: mvn -B clean install --file ${{ github.workspace }}\pom.xml
       - name: Update Automatic Release
         uses: marvinpinto/action-automatic-releases@latest
         with:
