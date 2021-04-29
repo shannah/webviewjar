@@ -55,7 +55,7 @@ jobs:
       - name: Test linux Maven
         run: mvn -B clean test --file ${{ github.workspace }}/pom.xml
   build-release:
-    runs-on: windows-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v2
       - name: Set up JDK 1.8
