@@ -1,19 +1,15 @@
-/*
- * To change this license header, choose License Headers in Project Properties.
- * To change this template file, choose Tools | Templates
- * and open the template in the editor.
- */
-
 import ca.weblite.webview.WebView;
 import ca.weblite.webview.WebViewCLIClient;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import static junit.framework.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /**
@@ -22,16 +18,16 @@ import static junit.framework.Assert.assertEquals;
 public class WebViewCLIClientTest {
     WebViewCLIClient client;
 
-    public WebViewCLIClientTest() {
-    }
-
+    /**
+     * You can use this to run as a test application in your IDE
+     */
     public static void main(String[] args) {
 
         WebView webview = new WebView()
                 .size(800, 600)
                 .title("Test")
                 .resizable(true)
-                .url("https://theoryofgeek.com/")
+                .url("https://github.com/shannah/webviewjar")
                 .addJavascriptCallback("callback", x ->
                 {
                     System.out.println(x);
@@ -40,29 +36,24 @@ public class WebViewCLIClientTest {
         webview.show();
     }
 
-    @Before
+    @BeforeEach
     public void setUp() {
         client = (WebViewCLIClient) new WebViewCLIClient.Builder()
-                .url("http://solutions.weblite.ca")
+                .url("https://github.com/shannah/webviewjar")
                 .build();
-
-
     }
 
-    public void tearDown() {
-        try {
-            client.close();
-        } catch (Exception ex) {
-        }
+    @AfterEach
+    public void tearDown() throws Exception {
+        client.close();
     }
 
     @Test
+    @Timeout(6000)
     public void testEval() throws InterruptedException, ExecutionException, TimeoutException {
-        System.out.println("eval");
-        //Thread.sleep(2000l);
         client.ready().get(5000, TimeUnit.MILLISECONDS);
         String title = client.eval("complete(document.title)").get(5000, TimeUnit.MILLISECONDS);
-        assertEquals("\"Web Lite Solutions Corp. | Vancouver, British Columbia, Canada\"", title);
+        assertThat(title).contains("webviewjar");
     }
 
 }

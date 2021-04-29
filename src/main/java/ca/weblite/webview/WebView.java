@@ -24,6 +24,7 @@
 package ca.weblite.webview;
 
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -39,7 +40,7 @@ import java.util.Map;
  * to launch the WebView in its own child process.
  * @author shannah
  */
-public class WebView {
+public class WebView implements AutoCloseable {
     /**
      * The native pointer reference.
      */
@@ -227,6 +228,11 @@ public class WebView {
         }
         WebViewNative.webview_navigate(peer, url);
         WebViewNative.webview_run(peer);
+    }
+
+    @Override
+    public void close() throws Exception {
+
     }
 
 
