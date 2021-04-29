@@ -2,3 +2,6 @@ dist
 build
 .DS_Store
 private
+.idea
+target
+*.iml

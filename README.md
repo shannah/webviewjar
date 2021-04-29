@@ -1,8 +1,14 @@
 # WebView
 
-This is a Java port of the fantastic, tiny, light-weight [WebView](https://github.com/zserge/webview) by [Serge Zaitsev](https://zserge.com).
+This is a Java port of the fantastic, tiny, light-weight [WebView](https://github.com/zserge/webview)
+by [Serge Zaitsev](https://zserge.com).
 
-It is packaged into an executable Jar file so that you can run it as a CLI self-contained process or as a Java library inside your current process.
+To build the Java sources, you will need Java and Apache Maven. To build the native code you will also
+need the appropriate native C/C++ tooling.
+
+`mvn install` will build the jar and install it into your local Maven repository for use in other projects.
+
+The jar suitable for command-line execution will be in your target directory (as per Maven usual).
 
 ## Synopsis
 
@@ -12,14 +18,15 @@ Cross-platform WebView that can be opened and controlled via CLI or as JavaAPI.
 
 Download [WebView.jar](bin/WebView.jar)
 
-This jar can be run directly as an executable jar file (e.g. `java -jar WebView.jar [OPTIONS]`), or using the Java API by adding the jar to your classpath.
+This jar can be run directly as an executable jar file (e.g. `java -jar WebView.jar [OPTIONS]`), or using the Java API
+by adding the jar to your classpath.
 
 ## Platform Support
 
-Runs on Windows (32 or 64), Linux (64), and Mac.  Other platforms (e.g. Linux 32) can be supported.  Simply need to build the native libs for that platform.
+Runs on Windows (32 or 64), Linux (64), and Mac. Other platforms (e.g. Linux 32) can be supported. Simply need to build
+the native libs for that platform.
 
 ## Running in Separate Process
-
 
 You can run the WebView in a separate process by running:
 
@@ -60,9 +67,12 @@ java -jar WebView.jar https://google.com \
 
 ### Interacting with the Browser Environment
 
-You can interact with the browser environment by typing into the console while the browser is running.  The browser listens on STDIN, for any input, and it will evaluate any input as Javascript in the context of the current page.  E.g. Type "alert('foo')" then `[ENTER]` to open an alert popup.  
+You can interact with the browser environment by typing into the console while the browser is running. The browser
+listens on STDIN, for any input, and it will evaluate any input as Javascript in the context of the current page. E.g.
+Type "alert('foo')" then `[ENTER]` to open an alert popup.
 
-If you need to enter a multi-line Javascript command, then begin your input with `<<<SOME_BOUNDARY`, and end it with `SOME_BOUNDARY`.
+If you need to enter a multi-line Javascript command, then begin your input with `<<<SOME_BOUNDARY`, and end it
+with `SOME_BOUNDARY`.
 
 For example:
 
@@ -79,8 +89,11 @@ NOTE:  If you give it an empty boundary, then it will simply use a blank line as
 
 There are two ways get the browser to communicate back to the outside world:
 
-1. The onLoad callback.  Whenever the user nagivates to a new page, it will output `loaded [URL]` to STDOUT.  E.g. If you navigate to google.com, then it will output `loaded https://google.com` to STDOUT.
-2. Call `window.postMessageExt("some message")`.  This will cause the browser print "some message" to STDOUT.  All messages of this kind are wrapped with beginning and ending boundaries to make the output easier to parse, in case you are writing a program to interact with the browser.
+1. The onLoad callback. Whenever the user nagivates to a new page, it will output `loaded [URL]` to STDOUT. E.g. If you
+   navigate to google.com, then it will output `loaded https://google.com` to STDOUT.
+2. Call `window.postMessageExt("some message")`. This will cause the browser print "some message" to STDOUT. All
+   messages of this kind are wrapped with beginning and ending boundaries to make the output easier to parse, in case
+   you are writing a program to interact with the browser.
 
 Here is an example of a session, where I load google.com, and then get its page title via `window.external.invoke()`:
 
@@ -98,11 +111,12 @@ A few things to notice here:
 
 1. When the page is loaded, it informed us with "loaded https://www.google.com" in STDOUT
 2. I typed the "window.external.invoke(document.title)" command.
-3. It responded to my command with an open boundary `<<<Boundary1575660241187` followed by the message ("Google"), followed by the closing boundary `Boundary1575660241187`
+3. It responded to my command with an open boundary `<<<Boundary1575660241187` followed by the message ("Google"),
+   followed by the closing boundary `Boundary1575660241187`
 
 ## Using Java API
 
-If you want to use the webview directly in your Java app, you can do this also. 
+If you want to use the webview directly in your Java app, you can do this also.
 
 A simple usage example:
 
@@ -126,13 +140,16 @@ webview = new WebView()
 
 NOTE: The `show()` method will start a blocking event loop.
 
-WARNING: Currently the WebView is picky about being started on the main application thread.  On Mac you may need to add the "-XstartOnFirstThread" flag in the JVM.
+WARNING: Currently the WebView is picky about being started on the main application thread. On Mac you may need to add
+the "-XstartOnFirstThread" flag in the JVM.
 
 ## Using Java API from Swing, JavaFX, or other UI Toolkit
 
-The WebView class cannot be used from Swing, JavaFX, or any other existing UI toolkit because it starts its own event loop.  If you want to make use of the WebView from within such an app, you'll need to use the WebViewCLIClient class, which provides an interface to create and manage a WebView which runs inside its own subprocess.
+The WebView class cannot be used from Swing, JavaFX, or any other existing UI toolkit because it starts its own event
+loop. If you want to make use of the WebView from within such an app, you'll need to use the WebViewCLIClient class,
+which provides an interface to create and manage a WebView which runs inside its own subprocess.
 
-See the [Swing Demo](demos/WebViewSwingDemo/README.md) for a full example of this.
+See the [Swing Demo](demos/ca.weblite.webview.demo.WebViewSwingDemo/README.md) for a full example of this.
 
 The basics are:
 
@@ -169,19 +186,16 @@ webview.eval("callback(window.location.href)")
 webview.close();
 ~~~~
 
-
-    
-
-
 #### Demos
 
-1. [Swing Demo](demos/WebViewSwingDemo/README.md) - A simple demo showing how to create and control a WebView from a Swing App.
-2. [Minimal Demo](demos/WebViewMinimalDemo/README.md) - A simple demo that only launches a WebView on the main thread.
+1. [Swing Demo](demos/ca.weblite.webview.demo.WebViewSwingDemo/README.md) - A simple demo showing how to create and
+   control a WebView from a Swing App.
+2. [Minimal Demo](demos/ca.weblite.webview.demo.WebViewMinimalDemo/README.md) - A simple demo that only launches a
+   WebView on the main thread.
 
 ## Supported Platforms
 
 This should work on Mac, Linux, and Windows.
-
 
 ## Building Sources
 
@@ -195,17 +209,19 @@ This will create dist/WebView.jar, which can be run as an executable jar.
 
 ### Troubleshooting
 
-ANT requires that the `platforms.JDK_1.8.home` system property is set to your JAVA_HOME.  If it complains about this, you can fix the issue by changing the `ant jar` command, above, to `ant jar -Dplatforms.JDK_1.8.home="$JAVA_HOME"`.
+ANT requires that the `platforms.JDK_1.8.home` system property is set to your JAVA_HOME. If it complains about this, you
+can fix the issue by changing the `ant jar` command, above, to `ant jar -Dplatforms.JDK_1.8.home="$JAVA_HOME"`.
 
 ### Rebuilding Native Libs
 
-The repo comes with pre-built native libs in the src/windows_32, src/windows_64, src/osx_64, and src/linux_64.  If you want to make changes to these native libs, then the following information may be of use to you.
+The repo comes with pre-built native libs in the src/windows_32, src/windows_64, src/osx_64, and src/linux_64. If you
+want to make changes to these native libs, then the following information may be of use to you.
 
-1. Use the `build-xxx.sh` (where xxx is your current platform) scripts to rebuild the native sources, and copy them into the appropriate place in the src directory.
-2. Mac and linux native sources are located in the src_c directory.  Windows native sources are in the windows directory.
-3. On Windows, you'll need to have Visual Studio installed (I use VS 2019, but earlier versions probably work).  Additionally, I use git bash on Windows, which is why the build-windows.sh is a bash script, and not a .bat script.
-
-
+1. Use the `build-xxx.sh` (where xxx is your current platform) scripts to rebuild the native sources, and copy them into
+   the appropriate place in the src directory.
+2. Mac and linux native sources are located in the src_c directory. Windows native sources are in the windows directory.
+3. On Windows, you'll need to have Visual Studio installed (I use VS 2019, but earlier versions probably work).
+   Additionally, I use git bash on Windows, which is why the build-windows.sh is a bash script, and not a .bat script.
 
 ## License
 
