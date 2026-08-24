@@ -20,6 +20,7 @@
 #include <objbase.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +49,120 @@ static const UINT WM_EMBED_DISPATCH = WM_APP + 1;
 static const UINT WM_EMBED_QUIT     = WM_APP + 2;
 
 using DispatchFn = std::function<void()>;
+
+static std::wstring get_environment_variable(const wchar_t *name) {
+    DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (size == 0) return {};
+
+    std::vector<wchar_t> value(size);
+    DWORD written = GetEnvironmentVariableW(name, value.data(), size);
+    if (written == 0 || written >= size) return {};
+    return std::wstring(value.data(), written);
+}
+
+static std::wstring get_host_executable_path() {
+    // GetModuleFileNameW does not provide a size-query mode.  32,768 UTF-16
+    // code units is the maximum extended-length path supported by Win32.
+    std::vector<wchar_t> path(32768);
+    DWORD written = GetModuleFileNameW(nullptr, path.data(),
+                                       static_cast<DWORD>(path.size()));
+    if (written == 0 || written >= path.size()) return {};
+    return std::wstring(path.data(), written);
+}
+
+static uint64_t fnv1a_path_hash(const std::wstring &path) {
+    // Hash UTF-16 code units explicitly so the folder name stays stable across
+    // compiler/runtime updates (unlike std::hash, whose output is unspecified).
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (wchar_t ch : path) {
+        hash ^= static_cast<uint16_t>(ch);
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static std::wstring join_path(const std::wstring &parent,
+                              const std::wstring &child) {
+    if (parent.empty()) return child;
+    wchar_t last = parent.back();
+    return parent + ((last == L'\\' || last == L'/') ? L"" : L"\\") + child;
+}
+
+static bool ensure_directory(const std::wstring &path, DWORD *error) {
+    DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        if (attributes & FILE_ATTRIBUTE_DIRECTORY) return true;
+        if (error) *error = ERROR_ALREADY_EXISTS;
+        return false;
+    }
+
+    if (CreateDirectoryW(path.c_str(), nullptr)) return true;
+
+    DWORD create_error = GetLastError();
+    attributes = GetFileAttributesW(path.c_str());
+    if (create_error == ERROR_ALREADY_EXISTS &&
+        attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        return true;
+    }
+    if (error) *error = create_error;
+    return false;
+}
+
+static std::wstring make_user_data_folder(const std::wstring &root,
+                                          const std::wstring &host_id,
+                                          DWORD *error) {
+    if (root.empty()) return {};
+    std::wstring library_root = join_path(root, L"SwingWebView");
+    if (!ensure_directory(library_root, error)) return {};
+
+    std::wstring user_data_folder = join_path(library_root, host_id);
+    if (!ensure_directory(user_data_folder, error)) return {};
+    return user_data_folder;
+}
+
+static std::wstring resolve_webview2_user_data_folder(DWORD *error) {
+    if (error) *error = ERROR_SUCCESS;
+
+    std::wstring override_path =
+        get_environment_variable(L"WEBVIEW2_USER_DATA_FOLDER");
+    if (!override_path.empty()) return override_path;
+
+    std::wstring executable = get_host_executable_path();
+    std::wstring filename = L"host";
+    if (!executable.empty()) {
+        size_t separator = executable.find_last_of(L"\\/");
+        filename = separator == std::wstring::npos
+            ? executable : executable.substr(separator + 1);
+        if (filename.empty()) filename = L"host";
+    }
+
+    wchar_t hash_suffix[40]{};
+    swprintf_s(hash_suffix, _countof(hash_suffix), L"-%016llx.WebView2",
+               static_cast<unsigned long long>(fnv1a_path_hash(executable)));
+    std::wstring host_id = filename + hash_suffix;
+
+    DWORD last_error = ERROR_PATH_NOT_FOUND;
+    std::wstring folder = make_user_data_folder(
+        get_environment_variable(L"LOCALAPPDATA"), host_id, &last_error);
+    if (!folder.empty()) return folder;
+
+    std::vector<wchar_t> temp_path(32768);
+    DWORD temp_length = GetTempPathW(static_cast<DWORD>(temp_path.size()),
+                                     temp_path.data());
+    if (temp_length > 0 && temp_length < temp_path.size()) {
+        folder = make_user_data_folder(
+            std::wstring(temp_path.data(), temp_length), host_id, &last_error);
+        if (!folder.empty()) return folder;
+    } else if (temp_length == 0) {
+        last_error = GetLastError();
+    } else {
+        last_error = ERROR_INSUFFICIENT_BUFFER;
+    }
+
+    if (error) *error = last_error;
+    return {};
+}
 
 struct JawtLock {
     JAWT awt{};
@@ -2311,8 +2426,18 @@ static void engine_thread(Engine *e, HWND /*parent*/, int width, int height,
                 init_done.clear();
             }
         });
+    DWORD user_data_error = ERROR_SUCCESS;
+    std::wstring user_data_folder =
+        resolve_webview2_user_data_folder(&user_data_error);
+    if (user_data_folder.empty()) {
+        WV_LOG("Could not create a writable WebView2 user data folder: "
+               "GetLastError=%lu; falling back to the WebView2 default",
+               user_data_error);
+    }
     HRESULT res = CreateCoreWebView2EnvironmentWithOptions(
-        nullptr, nullptr, nullptr, env_handler);
+        nullptr,
+        user_data_folder.empty() ? nullptr : user_data_folder.c_str(),
+        nullptr, env_handler);
     env_handler->Release();
     if (FAILED(res)) {
         WV_LOG("CreateCoreWebView2EnvironmentWithOptions failed: "

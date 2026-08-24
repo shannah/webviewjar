@@ -24,7 +24,10 @@ web engine:
 * **Windows** requires the system-wide Microsoft Edge WebView2 Runtime,
   which ships with current Windows 11 / Edge.  On older Windows, install
   the Evergreen Runtime from
-  <https://developer.microsoft.com/microsoft-edge/webview2/>.
+  <https://developer.microsoft.com/microsoft-edge/webview2/>. WebView2 user
+  data is stored in a per-application directory under
+  `%LOCALAPPDATA%\SwingWebView`; set `WEBVIEW2_USER_DATA_FOLDER` before
+  launch to override that location.
 * **Linux** requires a system WebKitGTK — either **4.1** (Ubuntu 22.04+)
   or **4.0** (Ubuntu 20.04).  The bundled `libwebview.so` resolves
   whichever is present at load time (no `webkit2gtk` SONAME is
@@ -176,7 +179,9 @@ snapshots `cairo_image_surface_t` pixels at ~30Hz into a
   queue.  `WebView2LoaderStatic.lib` is linked statically so we ship
   just `webview.dll`, no separate `WebView2Loader.dll`.  The system
   WebView2 Runtime (part of Edge / Windows 11) provides the actual
-  Chromium binaries.
+  Chromium binaries. The per-user WebView2 data directory is derived from
+  the host executable name and path, so applications installed under a
+  protected directory such as `Program Files` start without elevation.
 
 ### Focus cooperation (macOS + Windows heavyweight)
 
