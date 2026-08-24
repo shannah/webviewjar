@@ -501,6 +501,118 @@ static std::wstring utf8_to_wide(const char *s);
 static std::string wide_to_utf8(LPCWSTR w);
 static void dispatch_to_thread(Engine *e, DispatchFn fn);
 
+// One-shot JNI completion for asynchronous WebView2 cookie queries.  The
+// callback remains valid after the JNI entry returns and is released after
+// exactly one result has been delivered.
+struct CookieCompletion {
+    JavaVM *jvm = nullptr;
+    jobject callback = nullptr;
+};
+
+static CookieCompletion *new_cookie_completion(JNIEnv *env, jobject callback) {
+    if (!env || !callback) return nullptr;
+    auto *completion = new CookieCompletion();
+    env->GetJavaVM(&completion->jvm);
+    completion->callback = env->NewGlobalRef(callback);
+    if (!completion->jvm || !completion->callback) {
+        if (completion->callback) env->DeleteGlobalRef(completion->callback);
+        delete completion;
+        return nullptr;
+    }
+    return completion;
+}
+
+static void complete_cookie_query(CookieCompletion *completion,
+                                  const std::string &header,
+                                  const char *error) {
+    if (!completion) return;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (completion->jvm->GetEnv(
+            reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (completion->jvm->AttachCurrentThread(
+                reinterpret_cast<void **>(&env), nullptr) == JNI_OK) {
+            detach = true;
+        }
+    }
+    if (env) {
+        jclass cls = env->GetObjectClass(completion->callback);
+        jmethodID method = cls ? env->GetMethodID(
+            cls, "completed", "(Ljava/lang/String;Ljava/lang/String;)V")
+            : nullptr;
+        jstring jheader = env->NewStringUTF(header.c_str());
+        jstring jerror = error ? env->NewStringUTF(error) : nullptr;
+        if (method) {
+            env->CallVoidMethod(completion->callback, method, jheader, jerror);
+        }
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        }
+        if (jerror) env->DeleteLocalRef(jerror);
+        if (jheader) env->DeleteLocalRef(jheader);
+        if (cls) env->DeleteLocalRef(cls);
+        env->DeleteGlobalRef(completion->callback);
+    }
+    if (detach) completion->jvm->DetachCurrentThread();
+    delete completion;
+}
+
+class GetCookiesHandler : public CallbackBase<
+    ICoreWebView2GetCookiesCompletedHandler> {
+public:
+    explicit GetCookiesHandler(CookieCompletion *completion)
+        : m_completion(completion) {}
+
+    HRESULT STDMETHODCALLTYPE Invoke(
+            HRESULT result, ICoreWebView2CookieList *cookie_list) override {
+        if (FAILED(result) || !cookie_list) {
+            complete_cookie_query(m_completion, "", "WebView2 cookie query failed");
+            m_completion = nullptr;
+            return S_OK;
+        }
+
+        std::string header;
+        UINT count = 0;
+        if (FAILED(cookie_list->get_Count(&count))) {
+            complete_cookie_query(m_completion, "", "WebView2 cookie list is unavailable");
+            m_completion = nullptr;
+            return S_OK;
+        }
+        for (UINT index = 0; index < count; ++index) {
+            ICoreWebView2Cookie *cookie = nullptr;
+            if (FAILED(cookie_list->GetValueAtIndex(index, &cookie)) || !cookie) {
+                continue;
+            }
+            LPWSTR name = nullptr;
+            LPWSTR value = nullptr;
+            if (SUCCEEDED(cookie->get_Name(&name)) && name &&
+                    SUCCEEDED(cookie->get_Value(&value)) && value) {
+                if (!header.empty()) header += "; ";
+                header += wide_to_utf8(name);
+                header += "=";
+                header += wide_to_utf8(value);
+            }
+            if (name) CoTaskMemFree(name);
+            if (value) CoTaskMemFree(value);
+            cookie->Release();
+        }
+        complete_cookie_query(m_completion, header, nullptr);
+        m_completion = nullptr;
+        return S_OK;
+    }
+
+protected:
+    ~GetCookiesHandler() override {
+        if (m_completion) {
+            complete_cookie_query(m_completion, "", "WebView2 cookie query was cancelled");
+        }
+    }
+
+private:
+    CookieCompletion *m_completion;
+};
+
 class FocusHandler : public CallbackBase<
     ICoreWebView2FocusChangedEventHandler> {
 public:
@@ -3057,6 +3169,64 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1cle
 // link-symmetry with the JNI declaration.
 JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1clear_1cache
   (JNIEnv *, jclass, jlong) {
+}
+
+// Return all cookies applicable to the requested URL in HTTP Cookie header
+// syntax.  WebView2's cookie manager includes HttpOnly cookies, unlike
+// document.cookie, which is required for authenticated browser handoff.
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1get_1cookies
+  (JNIEnv *env, jclass, jlong wv, jstring url, jobject callback) {
+    auto *completion = embed_win::new_cookie_completion(env, callback);
+    if (!completion) return;
+    auto *e = (Engine *)wv;
+    if (!e || !url || e->thread_id == 0) {
+        embed_win::complete_cookie_query(
+            completion, "", "WebView is not available");
+        return;
+    }
+    const char *chars = env->GetStringUTFChars(url, nullptr);
+    std::wstring requested_url = embed_win::utf8_to_wide(chars ? chars : "");
+    if (chars) env->ReleaseStringUTFChars(url, chars);
+    embed_win::dispatch_to_thread(e, [e, requested_url, completion] {
+        if (!e->webview) {
+            embed_win::complete_cookie_query(
+                completion, "", "WebView is not available");
+            return;
+        }
+        ICoreWebView2_2 *wv2 = nullptr;
+        if (FAILED(e->webview->QueryInterface(
+                __uuidof(ICoreWebView2_2),
+                reinterpret_cast<void **>(&wv2))) || !wv2) {
+            embed_win::complete_cookie_query(
+                completion, "", "WebView2 cookie manager is unavailable");
+            return;
+        }
+        ICoreWebView2CookieManager *manager = nullptr;
+        HRESULT manager_result = wv2->get_CookieManager(&manager);
+        wv2->Release();
+        if (FAILED(manager_result) || !manager) {
+            embed_win::complete_cookie_query(
+                completion, "", "WebView2 cookie manager is unavailable");
+            return;
+        }
+        auto *handler = new embed_win::GetCookiesHandler(completion);
+        HRESULT query_result = manager->GetCookies(
+            requested_url.c_str(), handler);
+        manager->Release();
+        if (FAILED(query_result)) {
+            handler->Invoke(query_result, nullptr);
+        }
+        // Release our reference. WebView2 retains the handler until its
+        // asynchronous completion when GetCookies succeeds.
+        handler->Release();
+    });
+}
+
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1get_1cookies
+  (JNIEnv *env, jclass, jlong, jstring, jobject callback) {
+    auto *completion = embed_win::new_cookie_completion(env, callback);
+    embed_win::complete_cookie_query(
+        completion, "", "Offscreen cookie queries are unsupported on Windows");
 }
 
 // Adopt a retained popup child (Canvas 20) into `parent`'s realized AWT HWND.

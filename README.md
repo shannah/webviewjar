@@ -630,6 +630,31 @@ wv.eval("location.reload()");   // refetch from the network
   should still be spot-checked on-device (confirm a previously-cached resource
   is re-requested, and cookies/login survive).
 
+## Read browser cookies
+
+Use `getCookies` to transfer a browser-authenticated session to an HTTP client
+without exposing credentials to page JavaScript:
+
+```java
+wv.getCookies("https://example.com/")
+  .thenAccept(cookieHeader -> request.header("Cookie", cookieHeader))
+  .exceptionally(error -> {
+      error.printStackTrace();
+      return null;
+  });
+```
+
+The future completes on the Swing event-dispatch thread. Its result contains
+only cookies applicable to the requested URL in HTTP `Cookie` header syntax
+(`name=value; name2=value2`). Unlike `document.cookie`, the native browser API
+also returns `HttpOnly` cookies. Treat the returned value as a credential: do
+not log it or include it in exception messages.
+
+The implementation uses `WKHTTPCookieStore` on macOS,
+`WebKitCookieManager` on Linux, and `ICoreWebView2CookieManager` on Windows.
+The WebView must be displayed and its native peer attached before calling this
+method. Cookie queries are asynchronous and do not block the Swing thread.
+
 ## Demo
 
 See [`demos/WebViewHeavyweightDemo/`](demos/WebViewHeavyweightDemo/README.md)
