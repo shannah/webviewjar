@@ -513,7 +513,7 @@ Key points:
 * **Coverage this release: macOS.**  On Linux and Windows the API is
   present and the programmatic store degrades gracefully, but the
   automatic capture / autofill activate once the per-platform native
-  channel and secret store land (Canvases 24 / 25).
+  channel and secret store land (Canvases 27 / 28).
 
 Known limitation: multi-step / identifier-first login flows (username and
 password on separate pages, e.g. some Okta configurations) are captured

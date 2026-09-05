@@ -128,7 +128,7 @@ generated_at: 2026-08-13T15:30:00-07:00
     This canvas implements the macOS bodies (Keychain) and provides
     stub bodies (return `false` / empty / `false`) for the non-macOS
     compilation of `webview_embed.cpp` and for `windows/webview_embed.cc`,
-    so the class links on every platform; canvases 24 / 25 fill them in.
+    so the class links on every platform; canvases 27 / 28 fill them in.
 - Add `setPasswordCallback(WebViewPasswordCallback)` to both
   `EmbeddedWebView` and `OffscreenWebView`, mirroring
   `setDialogCallback` (`EmbeddedWebView.java:566`,
@@ -137,7 +137,7 @@ generated_at: 2026-08-13T15:30:00-07:00
   holds a global ref.
 - Add `-framework Security` to `build-mac.sh` (Keychain access). This is
   the only build-script change in this canvas; libsecret / Advapi32
-  linkage is added by canvases 24 / 25.
+  linkage is added by canvases 27 / 28.
 - Definition of Done:
   - All 20 STORY-006-001 ACs pass on macOS with the new code.
   - A `WebViewPasswordDemo` under `demos/` exercises capture + save
@@ -752,7 +752,7 @@ File: `src/ca/weblite/webview/WebViewSavePasswordHandler.java`
    on `evalAsync(...).get()`; exceptions are caught by the dispatcher and
    forwarded to the default uncaught-exception handler; a caller that
    wants no UI overrides this to return a disposition directly; macOS
-   coverage this iteration (forward-ref canvases 24/25 for Linux/Windows).
+   coverage this iteration (forward-ref canvases 27/28 for Linux/Windows).
 
 ### 6. Create Store Interface — WebViewCredentialStore
 File: `src/ca/weblite/webview/WebViewCredentialStore.java`
@@ -1197,7 +1197,7 @@ Files under `test/ca/weblite/webview/`:
 - **macOS-only coverage in this canvas.** On Linux/Windows the shared
   `SHIM_JS` is injected but no native `__webview_pw__` handler is wired
   yet, so no capture/fill fires and the store natives are stubs; the
-  programmatic API returns empty / false there until canvases 24 / 25.
+  programmatic API returns empty / false there until canvases 27 / 28.
   README documents this; a maintainer removing the restriction updates the
   docs in lockstep.
 
@@ -1276,4 +1276,4 @@ Files under `test/ca/weblite/webview/`:
 - **macOS-only wiring this canvas.** Linux/Windows have no native
   `__webview_pw__` handler and stub store natives; the injected `SHIM_JS`
   is inert there (its `post` finds no channel / the native handler is
-  absent). Documented in README; canvases 24/25 activate them.
+  absent). Documented in README; canvases 27/28 activate them.

@@ -34,7 +34,7 @@ redacted marker).
 macOS is wired in this release (Keychain). On Linux and Windows the
 programmatic API works and the store degrades gracefully, but automatic
 capture / autofill activate once the per-platform native channel and
-secret store land (Canvases 24 / 25).
+secret store land (Canvases 27 / 28).
 
 ## Running
 

@@ -17,7 +17,7 @@
  *
  * Coverage this release: macOS (Keychain).  On Linux / Windows the
  * programmatic API works but automatic capture/fill activate once the
- * per-platform native channel + store land (Canvases 24 / 25).
+ * per-platform native channel + store land (Canvases 27 / 28).
  */
 package ca.weblite.webview.demos;
 
