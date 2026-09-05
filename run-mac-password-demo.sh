@@ -63,6 +63,14 @@ else
     for src in src_c/webview.c src_c/webview.h src_c/webview_embed.cpp; do
         if [ "$src" -nt "$DYLIB" ]; then NEED_DYLIB=1; break; fi
     done
+    # A sibling run-mac-*.sh may have built this dylib WITHOUT
+    # -framework Security, leaving the Keychain SecItem* / kSec* symbols
+    # unbound so every credential-store call silently fails.  Force a
+    # rebuild in that case regardless of mtime.
+    if [ "$NEED_DYLIB" = "0" ] && ! otool -L "$DYLIB" | grep -q Security; then
+        echo "Existing dylib does not link Security.framework; rebuilding."
+        NEED_DYLIB=1
+    fi
 fi
 
 if [ "$NEED_DYLIB" = "1" ]; then

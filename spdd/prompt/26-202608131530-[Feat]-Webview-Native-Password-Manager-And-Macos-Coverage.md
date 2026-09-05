@@ -1026,13 +1026,18 @@ File: `src_c/webview_embed.cpp` (guarded `#if defined(WEBVIEW_COCOA)`)
      UTF-8 of `millis + "\n" + password`; if present `SecItemUpdate`
      (set `kSecValueData`), else `SecItemAdd` (add `kSecValueData` +
      `kSecAttrSynchronizable=kCFBooleanFalse`). Return `errSecSuccess`.
-   - `webview_cred_store_find`: query `service` + `kSecMatchLimitAll` +
-     `kSecReturnAttributes=true` + `kSecReturnData=true`; iterate the
-     result array; for each item decode `kSecAttrAccount` → origin,
-     username; if origin == target, split `kSecValueData` on first `\n`
-     into millis + password; collect `[username, millis, password]`.
-     Return a `jobjectArray` of the flat triples (Java sorts). Empty
-     array on `errSecItemNotFound`.
+   - `webview_cred_store_find`: the macOS keychain rejects
+     `kSecMatchLimitAll` combined with `kSecReturnData` (it returns
+     `errSecParam`, not results), so read in **two phases**. Phase 1 —
+     query `service` + `kSecMatchLimitAll` + `kSecReturnAttributes=true`
+     and **no** `kSecReturnData`, to enumerate every matching item's
+     `kSecAttrAccount` (the username). Phase 2 — for each account from
+     phase 1, issue a second query `service` + `kSecAttrAccount` +
+     `kSecMatchLimitOne` + `kSecReturnData=true` to fetch that one item's
+     `kSecValueData`; split it on the first `\n` into millis + password.
+     Collect `[username, millis, password]` per item. Return a
+     `jobjectArray` of the flat triples (Java sorts). Empty array when
+     phase 1 yields `errSecItemNotFound` or no accounts.
    - `webview_cred_store_delete`: `SecItemDelete` with exact account;
      return `errSecSuccess || errSecItemNotFound ? (removed?)` — return
      `true` only when an item was actually deleted (`errSecSuccess`).
@@ -1106,7 +1111,13 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    resolve `JAVA_HOME`; build `libwebview.dylib` from
    `src_c/webview_embed.cpp` (only when missing or older than its sources)
    including `-framework Security` for Keychain access alongside the
-   existing WebKit / Cocoa / QuartzCore frameworks; compile the `src`
+   existing WebKit / Cocoa / QuartzCore frameworks. Because a sibling
+   `run-mac-*.sh` may have previously built the dylib **without**
+   `-framework Security` (leaving the Keychain `SecItem*` / `kSec*`
+   symbols unbound so every credential-store call silently fails), also
+   force a rebuild when an existing dylib does not already link Security
+   — detect via `otool -L "$DYLIB" | grep -q Security`, not mtime alone.
+   Then compile the `src`
    Java sources and stage `dist/WebView.jar` with the dylib at the
    architecture-named root; compile
    `demos/WebViewPasswordDemo/src/...WebViewPasswordDemo.java` against that

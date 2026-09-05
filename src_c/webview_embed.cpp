@@ -7895,36 +7895,50 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
     std::string svc = std::string(service ? service : "") + ":"
         + (origin ? origin : "");
     CFStringRef cfSvc = pw_cf(svc.c_str());
-    const void *qk[] = { kSecClass, kSecAttrService, kSecMatchLimit,
-                         kSecReturnAttributes, kSecReturnData };
-    const void *qv[] = { kSecClassGenericPassword, cfSvc, kSecMatchLimitAll,
-                         kCFBooleanTrue, kCFBooleanTrue };
-    CFDictionaryRef query = CFDictionaryCreate(kCFAllocatorDefault, qk, qv, 5,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFTypeRef result = nullptr;
-    OSStatus st = SecItemCopyMatching(query, &result);
     std::vector<std::string> triples;
-    if (st == errSecSuccess && result) {
-        CFArrayRef arr = (CFArrayRef)result;
+    // The macOS keychain rejects kSecMatchLimitAll combined with
+    // kSecReturnData (errSecParam), so read in two phases: phase 1
+    // enumerates the matching accounts (attributes only, no data); phase 2
+    // fetches each account's secret with a single-item, data-returning
+    // query.
+    const void *q1k[] = { kSecClass, kSecAttrService, kSecMatchLimit,
+                          kSecReturnAttributes };
+    const void *q1v[] = { kSecClassGenericPassword, cfSvc, kSecMatchLimitAll,
+                          kCFBooleanTrue };
+    CFDictionaryRef q1 = CFDictionaryCreate(kCFAllocatorDefault, q1k, q1v, 4,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFTypeRef listResult = nullptr;
+    OSStatus st = SecItemCopyMatching(q1, &listResult);
+    if (st == errSecSuccess && listResult) {
+        CFArrayRef arr = (CFArrayRef)listResult;
         CFIndex n = CFArrayGetCount(arr);
         for (CFIndex i = 0; i < n; i++) {
             CFDictionaryRef item =
                 (CFDictionaryRef)CFArrayGetValueAtIndex(arr, i);
             CFStringRef acct =
                 (CFStringRef)CFDictionaryGetValue(item, kSecAttrAccount);
-            CFDataRef data =
-                (CFDataRef)CFDictionaryGetValue(item, kSecValueData);
+            if (!acct) continue;
             std::string username, millisStr = "0", password;
-            if (acct) {
-                CFIndex maxlen = CFStringGetMaximumSizeForEncoding(
-                    CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
-                std::vector<char> buf((size_t)maxlen);
-                if (CFStringGetCString(acct, buf.data(), maxlen,
-                                       kCFStringEncodingUTF8)) {
-                    username = buf.data();
-                }
+            CFIndex maxlen = CFStringGetMaximumSizeForEncoding(
+                CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
+            std::vector<char> buf((size_t)maxlen);
+            if (!CFStringGetCString(acct, buf.data(), maxlen,
+                                    kCFStringEncodingUTF8)) {
+                continue;
             }
-            if (data) {
+            username = buf.data();
+            // Phase 2: fetch this account's secret.
+            const void *q2k[] = { kSecClass, kSecAttrService, kSecAttrAccount,
+                                  kSecMatchLimit, kSecReturnData };
+            const void *q2v[] = { kSecClassGenericPassword, cfSvc, acct,
+                                  kSecMatchLimitOne, kCFBooleanTrue };
+            CFDictionaryRef q2 = CFDictionaryCreate(kCFAllocatorDefault,
+                q2k, q2v, 5, &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks);
+            CFTypeRef dataResult = nullptr;
+            if (SecItemCopyMatching(q2, &dataResult) == errSecSuccess
+                    && dataResult) {
+                CFDataRef data = (CFDataRef)dataResult;
                 const UInt8 *bytes = CFDataGetBytePtr(data);
                 CFIndex len = CFDataGetLength(data);
                 std::string blob((const char *)bytes, (size_t)len);
@@ -7936,13 +7950,15 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
                     password = blob;
                 }
             }
+            if (dataResult) CFRelease(dataResult);
+            CFRelease(q2);
             triples.push_back(username);
             triples.push_back(millisStr);
             triples.push_back(password);
         }
     }
-    if (result) CFRelease(result);
-    CFRelease(query); CFRelease(cfSvc);
+    if (listResult) CFRelease(listResult);
+    CFRelease(q1); CFRelease(cfSvc);
     if (service) env->ReleaseStringUTFChars(jservice, service);
     if (origin) env->ReleaseStringUTFChars(jorigin, origin);
     jobjectArray out =
