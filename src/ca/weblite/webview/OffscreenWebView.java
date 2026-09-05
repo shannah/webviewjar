@@ -443,7 +443,7 @@ public class OffscreenWebView {
      * not collect it while the native side holds a global ref, mirroring
      * {@link #setDialogCallback}.  On macOS / Windows, where the offscreen
      * engine is a stub, this has no effect; Linux lightweight wires the GTK
-     * script-message handler in Canvas 24.  {@code cb == null} clears the
+     * script-message handler in Canvas 27.  {@code cb == null} clears the
      * registration.
      */
     public OffscreenWebView setPasswordCallback(WebViewPasswordCallback cb) {

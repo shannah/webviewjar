@@ -169,7 +169,7 @@ struct Engine {
     std::map<ICoreWebView2DownloadOperation *, struct WinDownloadCtx *> downloads;
 
     // JNI global ref to the registered WebViewPasswordCallback, or nullptr.
-    // Stored here on Windows (Canvas 23); Canvas 25 wires the __webview_pw__
+    // Stored here on Windows (Canvas 26); Canvas 28 wires the __webview_pw__
     // branch of the WebMessageReceived handler off this field.
     jobject password_callback = nullptr;
 
@@ -3118,7 +3118,7 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_
 
 JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set_1password_1callback
   (JNIEnv *env, jclass, jlong wv, jobject cb) {
-    // Canvas 23 ships the callback storage on Windows; Canvas 25 wires the
+    // Canvas 26 ships the callback storage on Windows; Canvas 28 wires the
     // __webview_pw__ branch of the WebMessageReceived handler off this
     // field plus the Credential Manager store.  Until then storing the ref
     // is a harmless no-op.
@@ -3138,7 +3138,7 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_
     // Windows has no offscreen engine; stub for link-symmetry.
 }
 
-// Credential store primitives — Canvas 25 implements these against the
+// Credential store primitives — Canvas 28 implements these against the
 // Windows Credential Manager (CredWrite/CredRead/CredEnumerate/CredDelete).
 // Until then they are graceful stubs; NativeCredentialStore treats a false /
 // empty result as "unavailable" and degrades to a no-op.

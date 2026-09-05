@@ -323,7 +323,7 @@ public class WebViewLightweightComponent extends WebViewComponent {
         });
         // Install the password-manager bridge: inject the shared
         // detection/fill script and route native login-submission /
-        // fill-request messages to the PasswordDispatcher.  Canvas 24 wires
+        // fill-request messages to the PasswordDispatcher.  Canvas 27 wires
         // the native WebKitGTK __webview_pw__ script-message handler on the
         // offscreen engine; until then this setPasswordCallback call is a
         // native-side no-op.

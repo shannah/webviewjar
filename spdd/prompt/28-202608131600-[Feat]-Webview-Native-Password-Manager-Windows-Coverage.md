@@ -6,11 +6,11 @@ generated_at: 2026-08-13T16:00:00-07:00
 
 ## R · Requirements
 
-- Extend the password manager shipped by canvas 23 (STORY-006-001) to
+- Extend the password manager shipped by canvas 26 (STORY-006-001) to
   Windows, where `WebViewHeavyweightComponent` uses Microsoft WebView2
   (embedded Edge/Chromium). This canvas adds Windows native code only —
   **no Java or JavaScript changes**: the public API and the shared
-  `PasswordDispatcher.SHIM_JS` are reused verbatim from canvas 23. Windows
+  `PasswordDispatcher.SHIM_JS` are reused verbatim from canvas 26. Windows
   uses the **library's own** password manager (not Edge's profile store),
   so behaviour is uniform with macOS and Linux.
 - Three native pieces, all in `windows/webview_embed.cc` (replacing the
@@ -60,7 +60,7 @@ generated_at: 2026-08-13T16:00:00-07:00
   file-picker carve-out) — all 13 STORY-006-003 ACs are achievable.
 - Definition of Done:
   - All 13 STORY-006-003 ACs pass on Windows 11 with the WebView2 Runtime.
-  - `WebViewPasswordDemo` (canvas 23) works unchanged on Windows.
+  - `WebViewPasswordDemo` (canvas 26) works unchanged on Windows.
   - README's "Password manager" subsection updates coverage to
     all-three-platforms, with the Windows note: the library's own manager
     is used (not Edge's profile), credentials live in the Windows
@@ -69,7 +69,7 @@ generated_at: 2026-08-13T16:00:00-07:00
   - `windows/script/build.bat` (or the Windows build) links `Advapi32`
     for the `Cred*` APIs if not already linked.
 - Out of scope (explicit non-goals):
-  - macOS — canvas 23. Linux — canvas 24.
+  - macOS — canvas 26. Linux — canvas 27.
   - Any Java or `SHIM_JS` change.
   - Reading / importing Edge's existing saved passwords from the user's
     Edge profile — the library uses its own Credential-Manager namespace;
@@ -77,7 +77,7 @@ generated_at: 2026-08-13T16:00:00-07:00
   - Roaming / enterprise credential sync beyond choosing the per-user
     `CRED_PERSIST_LOCAL_MACHINE` flag.
   - The multi-step-login and heap-zeroisation limitations documented in
-    canvas 23.
+    canvas 26.
 
 ## E · Entities
 
@@ -102,7 +102,7 @@ generated_at: 2026-08-13T16:00:00-07:00
 - **`windows/script/build.bat`** (modified if needed): link `Advapi32.lib`.
 - **README.md** (modified): coverage-note update to all three platforms.
 
-No new classes; the class model is canvas 23's.
+No new classes; the class model is canvas 26's.
 
 ## A · Approach
 
@@ -177,7 +177,7 @@ No new classes; the class model is canvas 23's.
 1. **Native engine layer** (`windows/webview_embed.cc`): the password
    branch in `MsgHandler`, the callback setter + fire helpers, the
    Credential-Manager store bodies, and the Edge-autosave-off setting.
-2. All higher layers are canvas 23's, unchanged. The Windows wiring in
+2. All higher layers are canvas 26's, unchanged. The Windows wiring in
    `WebViewHeavyweightComponent.createPeer()` (which already injects
    `SHIM_JS` and calls `setPasswordCallback`) now reaches live native code
    instead of a stub.
@@ -278,7 +278,7 @@ File: `windows/script/build.bat` (or the Windows link step)
 
 ## N · Norms
 
-- **No Java / `SHIM_JS` change.** Native-only; the contract is canvas 23's.
+- **No Java / `SHIM_JS` change.** Native-only; the contract is canvas 26's.
 - **Single `WebMessageReceived` registration, demuxed by content** — the
   password branch is added inside the existing `MsgHandler`, not a second
   handler, matching the codebase's single-Windows-channel convention.
@@ -312,7 +312,7 @@ File: `windows/script/build.bat` (or the Windows link step)
 - **JNI exception sanitisation** after every `CallVoidMethod`; symmetric
   attach/detach; null-callback short-circuit.
 - **Callback global-ref lifecycle** set in the setter, deleted on engine
-  destroy; the Java callback anchored in the wrapper `heap` (canvas 23).
+  destroy; the Java callback anchored in the wrapper `heap` (canvas 26).
 - **No behavioural drift.** Java layer, shared JS, and value encoding are
   shared; only the store backend, the message demux branch, and the
   Edge-autosave setting are Windows-specific — all conforming to the

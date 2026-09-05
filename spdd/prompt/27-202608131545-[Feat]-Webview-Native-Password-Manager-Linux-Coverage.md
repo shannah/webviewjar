@@ -6,16 +6,16 @@ generated_at: 2026-08-13T15:45:00-07:00
 
 ## R · Requirements
 
-- Extend the password manager shipped by canvas 23 (STORY-006-001) to
+- Extend the password manager shipped by canvas 26 (STORY-006-001) to
   Linux, for both `WebViewHeavyweightComponent` (X11-reparented
   WebKitGTK) and `WebViewLightweightComponent` (offscreen WebKitGTK).
   This canvas adds Linux native code only — **no Java or JavaScript
   changes**: the public API (`WebViewCredential`, `WebViewCredentialStore`,
   `WebViewSavePasswordHandler`, `PasswordDispatcher`, the `WebViewComponent`
   methods) and the shared `PasswordDispatcher.SHIM_JS` are reused verbatim
-  from canvas 23.
+  from canvas 26.
 - Two native pieces, both living in `src_c/webview_embed.cpp` under the
-  Linux compilation (the same file canvas 23 compiled with non-Apple stub
+  Linux compilation (the same file canvas 26 compiled with non-Apple stub
   bodies):
   1. **Password message channel + capture:** register a WebKitGTK
      script-message handler for name `__webview_pw__` on the engine's
@@ -71,7 +71,7 @@ generated_at: 2026-08-13T15:45:00-07:00
   - All 13 STORY-006-002 ACs pass on Linux (a Secret Service provider
     available for AC1–AC11/AC13; AC12 verified by disabling/removing the
     provider).
-  - `WebViewPasswordDemo` (from canvas 23) works unchanged on Linux in
+  - `WebViewPasswordDemo` (from canvas 26) works unchanged on Linux in
     both modes.
   - README's "Password manager" subsection updates the coverage note:
     Linux now supported (heavyweight + lightweight) via libsecret; still
@@ -79,22 +79,22 @@ generated_at: 2026-08-13T15:45:00-07:00
   - `build-linux.sh` gains no hard link to libsecret (runtime `dlopen`);
     a build comment documents the `dlopen("libsecret-1.so.0")` dependency.
 - Out of scope (explicit non-goals):
-  - Windows coverage (canvas 25).
-  - macOS — canvas 23.
-  - Any Java or `SHIM_JS` change — the contract is fixed by canvas 23.
+  - Windows coverage (canvas 28).
+  - macOS — canvas 26.
+  - Any Java or `SHIM_JS` change — the contract is fixed by canvas 26.
   - Shipping or requiring a specific keyring daemon (GNOME Keyring vs
     KWallet). The library targets the freedesktop Secret Service via
     libsecret and works with whichever provider implements it.
   - A library-provided keyring-unlock UI — if the login keyring is locked,
     libsecret / the Secret Service prompts per its own policy.
   - The multi-step-login and heap-zeroisation limitations already
-    documented in canvas 23.
+    documented in canvas 26.
 
 ## E · Entities
 
 - **`src_c/webview_embed.cpp`** (modified, Linux compilation). Gains:
   - `Engine::password_callback` `jobject` field is already declared by
-    canvas 23 (shared struct); Linux now uses it.
+    canvas 26 (shared struct); Linux now uses it.
   - A file-static `SecretSchema WEBVIEW_PW_SCHEMA` (Linux-guarded).
   - `dlopen`'d libsecret function pointers (file-static), resolved once
     lazily: `secret_password_store_sync`, `secret_password_lookup_sync`,
@@ -120,7 +120,7 @@ generated_at: 2026-08-13T15:45:00-07:00
   `dlopen` of `libsecret-1.so.0`; no `-lsecret` hard link.
 - **README.md** (modified): coverage-note update.
 
-No new classes; no mermaid diagram change (the class model is canvas 23's).
+No new classes; no mermaid diagram change (the class model is canvas 26's).
 
 ## A · Approach
 
@@ -211,10 +211,10 @@ No new classes; no mermaid diagram change (the class model is canvas 23's).
    `__webview_pw__` GTK message handler, the callback setter, the fire
    helpers, and the libsecret store bodies.
 2. All higher layers (JNI surface, wrappers, dispatcher, component API,
-   public contract, wiring, demo) are unchanged from canvas 23 — the Linux
+   public contract, wiring, demo) are unchanged from canvas 26 — the Linux
    wiring in `WebViewLightweightComponent.addNotify()` /
    `WebViewHeavyweightComponent.createPeer()` (which already call
-   `addOnBeforeLoad(SHIM_JS)` + `setPasswordCallback(...)` from canvas 23)
+   `addOnBeforeLoad(SHIM_JS)` + `setPasswordCallback(...)` from canvas 26)
    now reaches live native code instead of a stub.
 
 ## O · Operations
@@ -290,7 +290,7 @@ File: `src_c/webview_embed.cpp` (Linux)
    cleanup).
 
 ### 7. fire helpers (shared)
-1. If canvas 23 defined `fire_password_submitted` /
+1. If canvas 26 defined `fire_password_submitted` /
    `fire_password_fill_requested` without Cocoa dependencies, reuse them
    directly. Otherwise define the Linux copies with identical JNI
    mechanics (per-call `GetMethodID` for
@@ -311,7 +311,7 @@ File: `src_c/webview_embed.cpp` (Linux)
 ## N · Norms
 
 - **No Java / `SHIM_JS` change.** This canvas is native-only; the contract
-  and script are canvas 23's. If a change here would require touching
+  and script are canvas 26's. If a change here would require touching
   Java, stop — it belongs in a canvas-23 amendment, not here.
 - **Origin from `webkit_web_view_get_uri` only** — never from the JS
   payload. Same invariant as macOS.
@@ -357,7 +357,7 @@ File: `src_c/webview_embed.cpp` (Linux)
   path.
 - **Callback global-ref lifecycle** set in `gtk_set_password_callback`,
   deleted on engine destroy; the Java callback anchored in the wrapper's
-  `heap` (canvas 23).
+  `heap` (canvas 26).
 - **No behavioural drift from macOS** — because the Java layer, the shared
   JS, and the value encoding are shared, the only Linux-specific surface
   is the store backend and the message-handler plumbing; both conform to

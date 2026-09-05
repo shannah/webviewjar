@@ -441,8 +441,8 @@ struct Engine {
     // nullptr.  Set by cocoa_set_password_callback / gtk_set_password_callback
     // and cleared on engine destroy.  Invoked by the __webview_pw__
     // script-message handler (login submission / autofill request) that
-    // the injected PasswordDispatcher.SHIM_JS posts to (Canvas 23 macOS;
-    // Canvas 24 Linux).
+    // the injected PasswordDispatcher.SHIM_JS posts to (Canvas 26 macOS;
+    // Canvas 27 Linux).
     jobject password_callback = nullptr;
 
     Engine() {}
@@ -5760,7 +5760,7 @@ static void cocoa_set_dialog_callback(Engine *e, JNIEnv *env, jobject cb) {
 }
 
 // ---------------------------------------------------------------------------
-// Password-manager bridge (Canvas 23).
+// Password-manager bridge (Canvas 26).
 //
 // The injected PasswordDispatcher.SHIM_JS posts to the reserved
 // "__webview_pw__" script-message channel:
@@ -7805,8 +7805,8 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_
 }
 
 // ---------------------------------------------------------------------------
-// Password-manager callback registration + credential store (Canvas 23
-// macOS; Canvas 24 Linux).  Must live inside this extern "C" block so the
+// Password-manager callback registration + credential store (Canvas 26
+// macOS; Canvas 27 Linux).  Must live inside this extern "C" block so the
 // JVM can resolve them (UnsatisfiedLinkError otherwise).
 // ---------------------------------------------------------------------------
 
@@ -7816,14 +7816,14 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set
 #if defined(WEBVIEW_COCOA)
     embed::cocoa_set_password_callback((embed::Engine *)wv, env, cb);
 #else
-    // Linux GTK password channel wired in Canvas 24.
+    // Linux GTK password channel wired in Canvas 27.
     (void)env; (void)cb;
 #endif
 }
 
 JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1set_1password_1callback
   (JNIEnv *env, jclass, jlong peer, jobject cb) {
-    // Linux lightweight wired in Canvas 24; macOS/Windows offscreen is a stub.
+    // Linux lightweight wired in Canvas 27; macOS/Windows offscreen is a stub.
     (void)peer; (void)env; (void)cb;
 }
 

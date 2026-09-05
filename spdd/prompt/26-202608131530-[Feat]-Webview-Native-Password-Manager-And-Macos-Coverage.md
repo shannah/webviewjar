@@ -114,7 +114,7 @@ generated_at: 2026-08-13T15:30:00-07:00
     — mirror the `..._set_dialog_callback` precedent
     (`WebViewNative.java:284, 449`). The offscreen setter is a native
     no-op stub on macOS (offscreen is itself a stub on macOS); Linux
-    lightweight wires it in canvas 24.
+    lightweight wires it in canvas 27.
   - Process-global static store primitives (no engine handle, because
     the OS secret store is process-global):
     - `boolean webview_cred_store_save(String service, String origin, String username, String password, long savedAtMillis)`
@@ -124,7 +124,7 @@ generated_at: 2026-08-13T15:30:00-07:00
     - `boolean webview_cred_store_delete(String service, String origin, String username)`
     - `boolean webview_cred_store_available()` — whether the platform
       secret store is usable (always `true` on macOS; meaningful on
-      Linux in canvas 24).
+      Linux in canvas 27).
     This canvas implements the macOS bodies (Keychain) and provides
     stub bodies (return `false` / empty / `false`) for the non-macOS
     compilation of `webview_embed.cpp` and for `windows/webview_embed.cc`,
@@ -159,9 +159,9 @@ generated_at: 2026-08-13T15:30:00-07:00
     integration-tested via the demo (consistent with the
     no-automated-GUI-tests policy).
 - Out of scope (explicit non-goals):
-  - Linux WebKitGTK message handler + libsecret store (canvas 24).
+  - Linux WebKitGTK message handler + libsecret store (canvas 27).
   - Windows WebView2 message handler + Credential Manager store, and
-    disabling Edge's built-in autosave (canvas 25).
+    disabling Edge's built-in autosave (canvas 28).
   - The standalone in-process `WebView` class — this canvas only touches
     the embedded `WebViewComponent` surface.
   - A credential-management UI (a "manage saved passwords" window). Hosts
@@ -312,7 +312,7 @@ generated_at: 2026-08-13T15:30:00-07:00
 - **`windows/webview_embed.cc`** (modified, stubs only in this canvas):
   stub bodies for the four `webview_cred_store_*` primitives and the two
   `..._set_password_callback` setters, so the JNI surface links on
-  Windows. Real Windows implementation is canvas 25.
+  Windows. Real Windows implementation is canvas 28.
 
 - **`build-mac.sh`** (modified): add `-framework Security`.
 
@@ -644,7 +644,7 @@ WebViewPasswordCallback ..> PasswordDispatcher : delegates to
    installs a `WebViewPasswordCallback` adapter delegating to
    `passwordDispatcher.dispatch*`.
 6. `WebViewLightweightComponent.addNotify()` → same shape via
-   `OffscreenWebView` (native no-op on macOS; live on Linux in canvas 24).
+   `OffscreenWebView` (native no-op on macOS; live on Linux in canvas 27).
 7. `EmbeddedWebView.setPasswordCallback` →
    `WebViewNative.webview_embed_set_password_callback`;
    `OffscreenWebView.setPasswordCallback` →
@@ -1035,7 +1035,7 @@ File: `src_c/webview_embed.cpp` (guarded `#if defined(WEBVIEW_COCOA)`)
 8. Non-Apple compilation of this file (`#else`): stub bodies for the four
    store primitives (`false` / empty `jobjectArray` / `false`) and the
    two setters, so the Linux build of `webview_embed.cpp` links until
-   canvas 24 replaces them.
+   canvas 27 replaces them.
 
 ### 17. Windows native stubs
 File: `windows/webview_embed.cc`
@@ -1043,7 +1043,7 @@ File: `windows/webview_embed.cc`
 1. Add stub `JNIEXPORT` bodies for `webview_embed_set_password_callback`,
    `webview_offscreen_set_password_callback`, and the four
    `webview_cred_store_*` primitives (`false` / empty / `false`) so the
-   Windows binary links. Real implementation is canvas 25.
+   Windows binary links. Real implementation is canvas 28.
 
 ### 18. Wire the bridge — WebViewHeavyweightComponent
 File: `src/ca/weblite/webview/swing/WebViewHeavyweightComponent.java`
@@ -1066,7 +1066,7 @@ File: `src/ca/weblite/webview/swing/WebViewLightweightComponent.java`
    - `engine.setPasswordCallback(...)` delegating to `passwordDispatcher`
      as in Operation 18.
 2. On macOS the offscreen native setter is a no-op, so this compiles and
-   runs harmlessly; it goes live on Linux in canvas 24.
+   runs harmlessly; it goes live on Linux in canvas 27.
 
 ### 20. Build script — link Security.framework
 File: `build-mac.sh`
@@ -1240,7 +1240,7 @@ Files under `test/ca/weblite/webview/`:
   dispatcher's `safeSave` / `doFill` wrap store calls in
   `try/catch(Throwable)`; a store that throws (or a Keychain error)
   degrades to "not saved" / "not filled", never a crash (foundation for
-  the Linux no-keyring AC12 in canvas 24).
+  the Linux no-keyring AC12 in canvas 27).
 - **Enabled flag gates automatic behaviour only.** When disabled,
   `dispatchLoginSubmitted` / `dispatchFillRequested` return before any
   prompt / lookup / fill; `saveCredential` / `getCredential` /

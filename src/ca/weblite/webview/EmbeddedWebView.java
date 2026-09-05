@@ -579,7 +579,7 @@ public class EmbeddedWebView {
      * collect it while the native side holds a global ref, mirroring
      * {@link #setDialogCallback}.  {@code cb == null} clears the
      * registration.  On macOS the native side is a dedicated
-     * {@code __webview_pw__} script-message handler (Canvas 23); Linux and
+     * {@code __webview_pw__} script-message handler (Canvas 26); Linux and
      * Windows wire theirs in the follow-up canvases.
      */
     public EmbeddedWebView setPasswordCallback(WebViewPasswordCallback cb) {

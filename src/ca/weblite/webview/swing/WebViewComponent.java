@@ -856,7 +856,7 @@ public abstract class WebViewComponent extends JComponent {
     }
 
     // ---------------------------------------------------------------------
-    // Password manager (Canvas 23+).  The manager auto-detects login
+    // Password manager (Canvas 26+).  The manager auto-detects login
     // submissions and offers to save them, and auto-fills a stored
     // credential on page load.  Credentials are keyed by page origin
     // (scheme+host+port) and matched exact-origin only.  Passwords live
