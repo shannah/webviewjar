@@ -143,6 +143,9 @@ generated_at: 2026-08-13T15:30:00-07:00
   - A `WebViewPasswordDemo` under `demos/` exercises capture + save
     prompt + autofill in default-handler, custom-handler, and
     in-memory-store modes.
+  - A top-level `run-mac-password-demo.sh` builds the macOS native lib
+    and `dist/WebView.jar`, then compiles and launches
+    `WebViewPasswordDemo`, so the demo runs with one command.
   - README grows a "Password manager" subsection documenting the
     `setPasswordManagerEnabled` / store / save-handler API, the
     origin-keying and origin-exact-match rules, the security notes
@@ -318,6 +321,10 @@ generated_at: 2026-08-13T15:30:00-07:00
 
 - **WebViewPasswordDemo** (new demo,
   `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDemo.java`).
+
+- **`run-mac-password-demo.sh`** (new, repo root): self-contained
+  build-and-run launcher for `WebViewPasswordDemo`, mirroring
+  `run-mac-download-demo.sh` and adding `-framework Security`.
 
 - **README.md** (modified): "Password manager" subsection.
 
@@ -1093,6 +1100,18 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    with passwords redacted.
 4. Comment at top: exercises AC1–AC14 interactively; passwords are never
    printed.
+5. Follow the existing demo layout and the `run-{linux,mac}-*.sh` script
+   convention at the repo root; add a top-level `run-mac-password-demo.sh`
+   alongside the existing ones. It mirrors `run-mac-download-demo.sh`:
+   resolve `JAVA_HOME`; build `libwebview.dylib` from
+   `src_c/webview_embed.cpp` (only when missing or older than its sources)
+   including `-framework Security` for Keychain access alongside the
+   existing WebKit / Cocoa / QuartzCore frameworks; compile the `src`
+   Java sources and stage `dist/WebView.jar` with the dylib at the
+   architecture-named root; compile
+   `demos/WebViewPasswordDemo/src/...WebViewPasswordDemo.java` against that
+   jar; and launch the demo's main class. No Ant required (the script is
+   self-contained, like the other `run-mac-*-demo.sh` scripts).
 
 ### 22. Update README
 File: `README.md`
