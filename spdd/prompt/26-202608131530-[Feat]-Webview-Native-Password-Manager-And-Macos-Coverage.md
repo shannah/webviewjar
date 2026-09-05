@@ -143,9 +143,12 @@ generated_at: 2026-08-13T15:30:00-07:00
   - A `WebViewPasswordDemo` under `demos/` exercises capture + save
     prompt + autofill in default-handler, custom-handler, and
     in-memory-store modes.
-  - A top-level `run-mac-password-demo.sh` builds the macOS native lib
-    and `dist/WebView.jar`, then compiles and launches
-    `WebViewPasswordDemo`, so the demo runs with one command.
+  - Top-level one-command launchers build the native lib and
+    `dist/WebView.jar`, then compile and launch `WebViewPasswordDemo`:
+    `run-mac-password-demo.sh` (Keychain-backed capture/autofill), plus
+    `run-linux-password-demo.sh` and `run-windows-password-demo.bat` for
+    the same demo (programmatic API + in-memory store; native capture/fill
+    pending canvases 27 / 28).
   - README grows a "Password manager" subsection documenting the
     `setPasswordManagerEnabled` / store / save-handler API, the
     origin-keying and origin-exact-match rules, the security notes
@@ -325,6 +328,12 @@ generated_at: 2026-08-13T15:30:00-07:00
 - **`run-mac-password-demo.sh`** (new, repo root): self-contained
   build-and-run launcher for `WebViewPasswordDemo`, mirroring
   `run-mac-download-demo.sh` and adding `-framework Security`.
+
+- **`run-linux-password-demo.sh`** / **`run-windows-password-demo.bat`**
+  (new, repo root): self-contained launchers for the same demo, mirroring
+  the download-demo siblings. Capture/autofill are macOS-only this
+  release; on Linux/Windows the demo runs with the programmatic API and
+  in-memory store working, native capture/fill pending canvases 27 / 28.
 
 - **README.md** (modified): "Password manager" subsection.
 
@@ -1123,6 +1132,19 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    `demos/WebViewPasswordDemo/src/...WebViewPasswordDemo.java` against that
    jar; and launch the demo's main class. No Ant required (the script is
    self-contained, like the other `run-mac-*-demo.sh` scripts).
+6. Also add Linux and Windows launchers for the same demo —
+   `run-linux-password-demo.sh` and `run-windows-password-demo.bat` —
+   each mirroring its download-demo sibling
+   (`run-linux-download-demo.sh` / `run-windows-download-demo.bat`)
+   verbatim except for targeting
+   `demos/WebViewPasswordDemo/...WebViewPasswordDemo.java` and its main
+   class. No macOS-only `-framework Security` step applies there (that is
+   a Keychain concern). Each header must state the coverage caveat:
+   automatic capture / autofill are macOS-only this release; on Linux and
+   Windows the demo still runs and the programmatic API plus the in-memory
+   store work, but the native capture/fill channel and OS secret store
+   arrive with canvases 27 / 28. The Linux script keeps the
+   heavyweight/lightweight mode selection of its sibling.
 
 ### 22. Update README
 File: `README.md`
