@@ -378,3 +378,194 @@ greenfield native store per platform. The remaining genuinely-open items are
 smaller and local to the Canvas: the origin canonical-form rule (AC7), the
 recency attribute for `find` ordering (AC11), and the SPA/synthetic-submit
 detection heuristic — all specifiable without new infrastructure.
+
+---
+
+# Addendum Analysis: STORY-006-004 (Autofill-Consent Handler) and STORY-006-005 (Enumerate-All)
+
+This addendum extends the analysis above to the two follow-on stories that
+reverse Scope-Out items 006-001 originally deferred. It treats the shipped
+code (`PasswordDispatcher`, `WebViewCredentialStore`, `NativeCredentialStore`,
+`WebViewComponent` password API, and the three native store bodies) as the
+authoritative baseline and analyses only the deltas.
+
+## Shipped baseline the deltas build on
+
+- **`PasswordDispatcher`** (`src/ca/weblite/webview/PasswordDispatcher.java`)
+  — holds `store` (volatile), `handler` (the save-policy, volatile),
+  `enabled` (volatile), and a single-thread `io` executor
+  (`webview-password-io`, daemon). Two native-facing entrypoints:
+  - `dispatchLoginSubmitted(...)` → `invokeLater(runPrompt)` → consults the
+    **save** handler on the EDT → on SAVE, `io.execute(safeSave)`.
+  - `dispatchFillRequested(frameUrl)` → `io.execute(doFill)` →
+    `store.find(origin)` → `source.eval("window.__webview_pw_fill__(...)")`.
+    **`doFill` consults no policy — this is the exact gap 006-004 fills.**
+- **`WebViewCredentialStore`** — `save`, `find(origin)`, `findAll(origin)`,
+  `delete(origin, username)`. Implementations must be thread-safe and must
+  degrade to "no result" rather than throw. **No no-argument enumerate — the
+  exact gap 006-005 fills.**
+- **`NativeCredentialStore`** delegates to process-global JNI primitives
+  `webview_cred_store_{save,find,delete,available}`; `find`/`findAll` already
+  wrap a JNI find that returns an array. The three native bodies each already
+  enumerate namespaced items (macOS two-phase `SecItemCopyMatching`; Windows
+  `CredEnumerateW` with a per-origin filter; Linux libsecret lookup).
+
+## STORY-006-004 — strategic direction
+
+**This is a pure, additive symmetry fix on the fill path — no native, no JS.**
+The save path already proves the exact shape: a policy interface with a Swing
+default, a component setter/getter delegating to the dispatcher, EDT
+invocation, and try/catch exception isolation forwarding to the default
+uncaught-exception handler. 006-004 mirrors it on the fill side.
+
+### Key decisions
+
+- **Where the gate goes.** `doFill` currently runs entirely on the `io`
+  worker: it does `store.find(origin)` (correctly off the EDT, because
+  keychain reads can block), then evals. The consent policy must run on the
+  **EDT** (it may show UI / a modal re-auth), exactly like `runPrompt`. So
+  `doFill`'s shape becomes: (1) `store.find(origin)` on the `io` worker as
+  today; (2) if present, marshal `{source, origin, username}` to the EDT via
+  `invokeLater` and consult the fill handler; (3) on `FILL`, eval the
+  write-only fill entrypoint. The eval itself is already safe to issue from
+  the EDT (it is a fire-and-forget `source.eval`). This keeps the blocking
+  keychain read off the EDT while putting only the (host-controlled) consent
+  decision on it — the same split the save path uses (worker for I/O, EDT for
+  policy).
+- **Default must be FILL (hard backward-compat constraint).** Existing
+  006-001/002/003 autofill ACs assert fields are filled with no prompt. So
+  `WebViewFillPasswordHandler.DEFAULT` returns `FILL` unconditionally and is
+  the dispatcher's initial handler. The **`CONFIRM`** constant is the opt-in
+  browser-style Swing prompt; it reuses the `SwingUtilities.getWindowAncestor`
+  + `JOptionPane.showConfirmDialog` recipe from
+  `WebViewSavePasswordHandler.DEFAULT`, showing origin + username only.
+- **Password-free event.** `WebViewFillPasswordEvent` carries `source`,
+  `origin`, `username` — deliberately **no password accessor**. This is a
+  security improvement over reusing `WebViewSavePasswordEvent` (which exposes
+  the password): the fill decision needs only identity, so the password is
+  never handed to host consent code. `doFill` already has the full credential
+  in hand; it simply does not put the password into the event.
+- **Disabled-manager short-circuit stays first.** `doFill` already returns
+  early when `disposed || !enabled`; the handler is consulted only after that,
+  so AC10 (disabled ⇒ no confirmation, no fill) holds for free.
+- **Re-auth is a seam, not an implementation.** The story ships the decision
+  point + a Swing-confirm default; a biometric/Windows-Hello/Touch-ID check is
+  a host-supplied handler (or a later story). No `LAContext`/Windows Hello
+  code in this story — that keeps it Java-only and cross-platform.
+
+### Edge cases
+
+- **Handler throws** → caught in `doFill`, forwarded to
+  `Thread.getDefaultUncaughtExceptionHandler` (the existing `forward` helper);
+  nothing filled, engine responsive (AC11).
+- **Handler blocks on a modal** → it is on the EDT, not the native engine
+  thread; the native side already returned after posting the fill request, so
+  nothing native is parked (the fill path was already non-blocking).
+- **Programmatic reads unaffected** — `getCredential`/`getCredentials`/
+  `getAllCredentials` call the store directly and never touch the fill
+  handler (AC9).
+- **Multiple fill requests** (SPA late-inserted form posts `F` again) — each
+  request re-consults the handler; a host that shows a modal should expect one
+  prompt per request, matching today's one-eval-per-request behaviour.
+
+### AC coverage — STORY-006-004
+
+| AC# | Description | Addressable? | Notes |
+|-----|-------------|--------------|-------|
+| 1 | Default still autofills, no prompt | Yes | `DEFAULT` returns FILL; dispatcher initial handler |
+| 2 | CONFIRM shows confirmation, no password | Yes | `CONFIRM` Swing prompt, origin+username only |
+| 3 | Approve → filled | Yes | FILL → eval fill entrypoint |
+| 4 | Decline → nothing filled, no error | Yes | DONT_FILL → skip eval |
+| 5 | Programmatic DONT_FILL handler | Yes | Policy seam, no UI |
+| 6 | Event exposes no password | Yes | `WebViewFillPasswordEvent` has no password accessor |
+| 7 | Handler on EDT | Yes | `invokeLater` marshal in `doFill` |
+| 8 | Getter non-null; setter null restores default | Yes | Same invariant discipline as save handler |
+| 9 | Programmatic read not gated | Yes | Read API bypasses the fill handler |
+| 10 | Disabled manager ⇒ no fill regardless of handler | Yes | `!enabled` early-return precedes handler |
+| 11 | Handler exception isolated | Yes | try/catch → `forward` |
+
+## STORY-006-005 — strategic direction
+
+**One new no-argument enumerate that lifts an existing native capability into
+the public contract.** The Java surface gains `WebViewCredentialStore.findAll()`
+(all origins) and `WebViewComponent.getAllCredentials()`; the native layer
+gains one process-global JNI primitive (`webview_cred_store_find_all`) with
+three platform bodies that reuse each platform's already-present enumeration.
+
+### Key decisions
+
+- **Return full credentials, not just origins.** `getAllCredentials()` returns
+  `List<WebViewCredential>` (origin+username+password), from which a host
+  derives the origin list for a manager UI. A separate `savedOrigins()` is not
+  added (Scope-Out) — one method, richest result, no new exposure surface
+  beyond what `find`/`findAll` already return to host Java.
+- **Reuse the per-platform enumerate primitive.**
+  - **macOS** (`src_c/webview_embed.cpp`, Canvas 26): the existing
+    `webview_cred_store_find` already does a two-phase read (phase-1
+    attributes via `kSecMatchLimitAll`, phase-2 per-item secret). `find_all`
+    is the same two-phase read with the **service-namespace-only** query (drop
+    the per-origin service filter, keep the `kSecClassGenericPassword` +
+    library-namespace scoping). The two-phase split is what avoids the
+    `errSecParam` bug the shipped code already documents — reuse it verbatim.
+  - **Windows** (`windows/webview_embed.cc`, Canvas 28): `webview_cred_store_find`
+    already calls `CredEnumerateW` with a `"<svc>:*"`-style filter and decodes
+    the `b64url(origin)|b64url(username)` target names. `find_all` uses the
+    **namespace-prefix filter** (`"<namespace>:*"`) and decodes every match —
+    the decode/blob-parse path is identical; only the filter widens.
+  - **Linux** (`src_c/webview_embed_linux.*` per Canvas 27): libsecret schema
+    search (`secret_password_search` / `secret_service_search_sync` over the
+    `SecretSchema` with only the library-namespace attribute bound) returns
+    every entry; map each to `{origin, username, password}` from the schema
+    attributes + secret. Same graceful-degradation (`available()` false ⇒
+    empty) contract.
+- **Recency ordering reused.** Every platform already stamps `savedAtMillis`
+  in the value blob (`millis\npassword`) and orders origin-scoped `findAll`
+  most-recent-first. `find_all` applies the same sort across the full set, so
+  ordering/dedup semantics are identical to origin-scoped `findAll` (AC2, AC3).
+- **`InMemoryCredentialStore`** enumerates its map (all origins), applying the
+  same most-recent-first ordering it already uses per-origin (AC6).
+- **No page-JS exposure.** Enumerate-all is a host-Java call only; there is no
+  reserved channel or injected global that returns it. The fill script stays
+  write-only and origin-scoped (AC9). This is a pure host-side capability.
+
+### Edge cases / risks
+
+- **Native enumerate cannot be locally compiled for Windows/Linux** (macOS dev
+  machine) — same constraint the shipped Windows body hit. Mitigation: mirror
+  the existing `find` body's structure exactly (only the query filter widens),
+  and rely on the CI native build matrix (all-platforms jar + per-arch native
+  jobs) to validate compilation, as the shipped code did.
+- **Large stores** — enumerate returns the full set in one call (Scope-Out:
+  paging). Acceptable for a personal password store; noted.
+- **Namespace collisions** — the query is scoped to the library service
+  namespace exactly as `find` is, so it never returns Safari/Edge/other-app
+  items (the shipped `find` already guarantees this scoping).
+- **Empty / unavailable store** → empty list, never throw (AC4, AC8),
+  matching the store contract.
+
+### AC coverage — STORY-006-005
+
+| AC# | Description | Addressable? | Notes |
+|-----|-------------|--------------|-------|
+| 1 | Enumerate across multiple origins | Yes | `find_all` namespace-scoped query |
+| 2 | Most-recently-saved first | Yes | Reuse `savedAtMillis` sort across full set |
+| 3 | Multiple usernames per origin | Yes | Enumerate returns each `{origin,username}` |
+| 4 | Empty store ⇒ empty list | Yes | No-match ⇒ empty, non-null |
+| 5 | Deletion reflected | Yes | Enumerate re-reads store |
+| 6 | In-memory store enumerates | Yes | Map enumeration |
+| 7 | Native round-trip per platform | Yes | Three native bodies reuse existing enumerate |
+| 8 | Graceful degradation | Yes | `available()` false ⇒ empty |
+| 9 | No page-JS exposure | Yes | Host-Java-only; fill script stays write-only |
+| 10 | Password never logged | Yes | Redacting `toString`; no logging on enumerate path |
+
+## Overall
+
+Both stories map cleanly onto shipped patterns with **no new infrastructure**:
+006-004 is a Java-only fill-side mirror of the existing save-side policy
+(dispatcher tweak + one enum + one password-free POJO + one interface with
+DEFAULT/CONFIRM + two component methods); 006-005 is one no-argument store
+method + one component method + one JNI primitive whose three bodies each widen
+an already-present per-origin enumerate to the namespace scope. The only
+genuinely non-local risk is native enumerate compilation on Windows/Linux,
+mitigated by structural parity with the shipped `find` bodies and the CI native
+matrix.

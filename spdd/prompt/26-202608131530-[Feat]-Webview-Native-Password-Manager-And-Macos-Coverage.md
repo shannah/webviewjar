@@ -26,7 +26,9 @@ generated_at: 2026-08-13T15:30:00-07:00
     value object; equality on `{origin, username}` (password excluded);
     `toString()` redacts the password.
   - `WebViewCredentialStore` — the storage seam interface: `save`,
-    `find(origin)`, `findAll(origin)`, `delete(origin, username)`.
+    `find(origin)`, `findAll(origin)`, `findAll()` (no-argument
+    enumerate-all across every origin, most-recently-saved first — added
+    by STORY-006-005), `delete(origin, username)`.
   - `NativeCredentialStore` — the default `WebViewCredentialStore`,
     backed by the OS-native secret store (Keychain on macOS in this
     canvas) through new process-global static JNI primitives.
@@ -41,6 +43,23 @@ generated_at: 2026-08-13T15:30:00-07:00
     `SavePasswordDisposition onLoginSubmitted(WebViewSavePasswordEvent)`,
     invoked on the EDT; `DEFAULT` shows a Swing "Save password?" prompt
     modal to the host `JFrame`.
+  - `FillPasswordDisposition` — enum `{ FILL, DONT_FILL }` (added by
+    STORY-006-004): the autofill-consent decision.
+  - `WebViewFillPasswordEvent` — immutable autofill-consent event
+    (`source`, `origin`, `username`) — deliberately **carries no
+    password** (no password accessor; `toString()` shows origin +
+    username only). Added by STORY-006-004.
+  - `WebViewFillPasswordHandler` — `@FunctionalInterface`,
+    `FillPasswordDisposition onAutofillRequested(WebViewFillPasswordEvent)`,
+    invoked on the EDT before an automatic autofill (added by
+    STORY-006-004). `DEFAULT` returns `FILL` unconditionally (preserves
+    the shipped silent-autofill behaviour — a hard backward-compat
+    requirement); `CONFIRM` is an opt-in instance that shows a Swing
+    "Use the saved password for `<origin>`?" confirm prompt (showing the
+    username, never the password) modal to the host `JFrame`, returning
+    `FILL` on OK and `DONT_FILL` on Cancel/close. A host may install
+    `CONFIRM`, or its own handler that performs an OS biometric /
+    re-authentication check, to gate autofill.
   - `WebViewPasswordCallback` — the JNI-facing callback interface (two
     void methods, invoked from the native message thread), analogous to
     `WebViewDialogCallback`. Application code never implements it; it
@@ -61,11 +80,22 @@ generated_at: 2026-08-13T15:30:00-07:00
     / `WebViewSavePasswordHandler getSavePasswordHandler()` — the
     save-policy seam; `null` reinstalls the default Swing-prompt handler;
     `get` never returns null.
+  - `WebViewComponent setFillPasswordHandler(WebViewFillPasswordHandler)`
+    / `WebViewFillPasswordHandler getFillPasswordHandler()` — the
+    autofill-consent seam (STORY-006-004); `null` reinstalls
+    `WebViewFillPasswordHandler.DEFAULT`; `get` never returns null.
+    Consulted only on the automatic page-load autofill path; the
+    programmatic read methods below are never gated by it.
   - `void saveCredential(WebViewCredential)` — programmatic upsert.
   - `java.util.Optional<WebViewCredential> getCredential(String origin)`
     — programmatic lookup (most-recently-saved for the origin).
   - `java.util.List<WebViewCredential> getCredentials(String origin)` —
     all credentials for the origin, most-recently-saved first.
+  - `java.util.List<WebViewCredential> getAllCredentials()` —
+    programmatic enumerate-all across every origin, most-recently-saved
+    first (STORY-006-005); the primitive a host needs to build a
+    "manage saved passwords" UI. Delegates to the store's no-argument
+    `findAll()`.
   - `boolean deleteCredential(String origin, String username)`.
 - Author the shared detection/fill JavaScript
   (`PasswordDispatcher.SHIM_JS`), injected at document-start on every
@@ -108,6 +138,20 @@ generated_at: 2026-08-13T15:30:00-07:00
 - All secret-store I/O (Keychain reads/writes) runs off the EDT and off
   the engine UI thread, on the dispatcher's single-thread executor. The
   autofill lookup and the post-approval save both run there.
+- **Autofill is gated by a consent handler (STORY-006-004).** After the
+  store lookup finds an origin-matched credential on the worker thread,
+  the dispatcher marshals `{source, origin, username}` (never the
+  password) to the EDT via `SwingUtilities.invokeLater`, re-checks the
+  disposed/enabled flags, and consults `WebViewFillPasswordHandler`. It
+  injects the credential (evals the write-only `__webview_pw_fill__`
+  entrypoint) only when the disposition is `FILL`; `DONT_FILL` skips the
+  injection silently. The default handler returns `FILL`, so the shipped
+  silent-autofill behaviour is unchanged unless a host opts into
+  `CONFIRM` or a custom (e.g. biometric) handler. A handler exception is
+  caught and forwarded to the default uncaught-exception handling;
+  nothing is filled. The keychain read stays on the worker; only the
+  host-controlled consent decision and the fire-and-forget eval run on
+  the EDT.
 - Add new JNI entry points on `WebViewNative`:
   - `webview_embed_set_password_callback(long, WebViewPasswordCallback)`
     and `webview_offscreen_set_password_callback(long, WebViewPasswordCallback)`
@@ -121,6 +165,12 @@ generated_at: 2026-08-13T15:30:00-07:00
     - `String[] webview_cred_store_find(String service, String origin)`
       — flat triples `[username, savedAtMillis, password, ...]`,
       most-recently-saved first; empty array when none / unavailable.
+    - `String[] webview_cred_store_find_all(String service)` — enumerate
+      every credential under the service namespace across all origins, as
+      flat **quads** `[origin, username, savedAtMillis, password, ...]`
+      (origin is included because it is not known a priori); empty array
+      when none / unavailable (STORY-006-005). macOS body here; Linux /
+      Windows bodies in canvases 27 / 28.
     - `boolean webview_cred_store_delete(String service, String origin, String username)`
     - `boolean webview_cred_store_available()` — whether the platform
       secret store is usable (always `true` on macOS; meaningful on
@@ -140,9 +190,28 @@ generated_at: 2026-08-13T15:30:00-07:00
   linkage is added by canvases 27 / 28.
 - Definition of Done:
   - All 20 STORY-006-001 ACs pass on macOS with the new code.
+  - All 11 STORY-006-004 ACs (autofill-consent handler) pass headlessly:
+    default fills with no prompt (no regression), `CONFIRM` shows a
+    password-free confirmation, approve fills / decline fills nothing, a
+    programmatic `DONT_FILL` handler suppresses fill, the fill event
+    exposes no password, the handler runs on the EDT, the getter is
+    never null and `setFillPasswordHandler(null)` restores `DEFAULT`, the
+    programmatic read API is not gated, a disabled manager short-circuits
+    before the handler, and a handler exception does not crash the
+    WebView.
+  - All 10 STORY-006-005 ACs (enumerate-all) pass: `getAllCredentials()`
+    returns every credential across all origins, most-recently-saved
+    first; multiple usernames per origin all appear; an empty store
+    returns an empty (non-null) list; a deletion is reflected; the
+    in-memory store enumerates; passwords never appear in output; page
+    JavaScript cannot reach the enumeration (macOS native round-trip
+    verified via the demo; Linux / Windows native bodies in canvases
+    27 / 28).
   - A `WebViewPasswordDemo` under `demos/` exercises capture + save
     prompt + autofill in default-handler, custom-handler, and
-    in-memory-store modes.
+    in-memory-store modes, plus a fill-consent toggle (install `CONFIRM`)
+    and a "Get All" action that lists every stored credential (username +
+    origin only; passwords never printed).
   - Top-level one-command launchers build the native lib and
     `dist/WebView.jar`, then compile and launch `WebViewPasswordDemo`:
     `run-mac-password-demo.sh` (Keychain-backed capture/autofill) and
@@ -171,8 +240,11 @@ generated_at: 2026-08-13T15:30:00-07:00
     disabling Edge's built-in autosave (canvas 28).
   - The standalone in-process `WebView` class — this canvas only touches
     the embedded `WebViewComponent` surface.
-  - A credential-management UI (a "manage saved passwords" window). Hosts
-    build their own on the programmatic API.
+  - A shipped credential-management UI (a "manage saved passwords"
+    window). Hosts build their own on the programmatic API — and
+    STORY-006-005 now supplies the missing enumerate-all primitive
+    (`getAllCredentials()`) that such a UI needs, so this is achievable;
+    the library still ships no manager window itself.
   - Guaranteed multi-step / identifier-first (split username→password
     page) capture. Best-effort per-page capture is in scope; cross-page
     correlation is a documented limitation.
@@ -180,7 +252,12 @@ generated_at: 2026-08-13T15:30:00-07:00
     metering.
   - Cross-origin / subdomain credential matching, and login inside a
     cross-origin iframe. Matching is exact top-frame origin only.
-  - Biometric / re-auth gating before autofill.
+  - A shipped biometric / OS-credential re-auth *implementation* (Touch
+    ID, Windows Hello, `LAContext`) before autofill. STORY-006-004 now
+    supplies the *decision seam* (`WebViewFillPasswordHandler`) plus a
+    Swing-`CONFIRM` default at which a host performs such a check and
+    returns `DONT_FILL` to decline; the library ships no biometric code
+    of its own.
   - Guaranteed zeroisation of password material on the JVM heap (Java
     `String` immutability prevents a hard guarantee; the library
     minimises retention and never logs — documented limitation).
@@ -210,6 +287,10 @@ generated_at: 2026-08-13T15:30:00-07:00
   - `java.util.List<WebViewCredential> findAll(String origin)` — all
     credentials for the origin, most-recently-saved first
     (unmodifiable list; empty when none).
+  - `java.util.List<WebViewCredential> findAll()` — no-argument
+    enumerate-all: every credential under the library namespace across
+    all origins, most-recently-saved first (unmodifiable list; empty when
+    none / store unavailable). Added by STORY-006-005.
   - `boolean delete(String origin, String username)` — remove one;
     returns whether anything was removed.
   No `DEFAULT` constant on the interface (the default *instance* is a
@@ -219,18 +300,23 @@ generated_at: 2026-08-13T15:30:00-07:00
   `src/ca/weblite/webview/NativeCredentialStore.java`). Default store,
   backed by the OS-native secret store via the static JNI primitives.
   Owns origin canonicalisation (through `Origins`) and translates
-  between `WebViewCredential` and the flat JNI triples. Stateless and
+  between `WebViewCredential` and the flat JNI triples (origin-scoped
+  `find`) / quads (`findAll()` enumerate-all). Stateless and
   thread-safe (the JNI primitives are process-global and serialise
   internally at the OS level). A single library-namespace `service`
-  constant (`"ca.weblite.webview.passwords"`).
+  constant (`"ca.weblite.webview.passwords"`). Its no-argument
+  `findAll()` calls the new `webview_cred_store_find_all` primitive
+  (STORY-006-005).
 
 - **InMemoryCredentialStore** (new public final class,
   `src/ca/weblite/webview/InMemoryCredentialStore.java`). A
   `WebViewCredentialStore` backed by a `ConcurrentHashMap` keyed by
   canonical origin → ordered list of `{username, savedAtMillis,
   password}`. Applies the same canonicalisation and recency ordering as
-  `NativeCredentialStore`, so tests observe identical semantics. Never
-  touches the OS store. Used by tests and available to hosts.
+  `NativeCredentialStore`, so tests observe identical semantics. Its
+  no-argument `findAll()` enumerates the whole map across all origins,
+  most-recently-saved first (STORY-006-005). Never touches the OS store.
+  Used by tests and available to hosts.
 
 - **WebViewSavePasswordEvent** (new public final class,
   `src/ca/weblite/webview/WebViewSavePasswordEvent.java`). Immutable.
@@ -255,6 +341,39 @@ generated_at: 2026-08-13T15:30:00-07:00
   returning `SAVE` on OK and `DONT_SAVE` on Cancel/close. Class Javadoc
   documents EDT invocation, that the method must not block on
   `evalAsync(...).get()` (EDT hazard), and exception isolation.
+
+- **FillPasswordDisposition** (new public enum,
+  `src/ca/weblite/webview/FillPasswordDisposition.java`): `FILL`,
+  `DONT_FILL`. The autofill-consent decision (STORY-006-004).
+
+- **WebViewFillPasswordEvent** (new public final class,
+  `src/ca/weblite/webview/WebViewFillPasswordEvent.java`). Immutable.
+  Package-private constructor `WebViewFillPasswordEvent(WebViewComponent
+  source, String origin, String username)`; `source` non-null (NPE),
+  `origin`/`username` non-null coerced to empty. Accessors `source()`,
+  `origin()`, `username()`. **No password field and no password
+  accessor** — the autofill-consent decision needs only identity, so the
+  password is never handed to host consent code. `toString()` renders
+  `"WebViewFillPasswordEvent[origin=<...>, username=<...>]"`
+  (STORY-006-004).
+
+- **WebViewFillPasswordHandler** (new public `@FunctionalInterface`,
+  `src/ca/weblite/webview/WebViewFillPasswordHandler.java`). Single
+  abstract method `FillPasswordDisposition onAutofillRequested(
+  WebViewFillPasswordEvent event)`, invoked on the EDT before an
+  automatic autofill. Public static constants:
+  - `DEFAULT` — returns `FILL` unconditionally, preserving the shipped
+    silent-autofill behaviour (hard backward-compat requirement); it is
+    the dispatcher's initial handler.
+  - `CONFIRM` — an opt-in instance whose `onAutofillRequested` shows a
+    Swing confirm prompt ("Use the saved password for `<origin>`?" plus
+    the username, **never** the password) modal to
+    `SwingUtilities.getWindowAncestor(event.source())`, returning `FILL`
+    on OK and `DONT_FILL` on Cancel/close.
+  Class Javadoc documents EDT invocation, that the method must not block
+  on `evalAsync(...).get()`, exception isolation, and that a host may
+  install `CONFIRM` or its own handler (e.g. one performing an OS
+  biometric / re-authentication check) to gate autofill (STORY-006-004).
 
 - **WebViewPasswordCallback** (new public interface,
   `src/ca/weblite/webview/WebViewPasswordCallback.java`). JNI-facing;
@@ -284,21 +403,26 @@ generated_at: 2026-08-13T15:30:00-07:00
 - **PasswordDispatcher** (new public final class,
   `src/ca/weblite/webview/PasswordDispatcher.java`). Per-component hub.
   Public-because-cross-package (matches `DialogDispatcher`). Holds the
-  active store, save-handler, enabled flag; a single-thread executor for
-  store I/O; the shared `SHIM_JS` constant; the native-facing dispatch
-  methods; and the programmatic API the component delegates to.
-  Invariants: constructed once per component, lives for its lifetime;
-  `getStore()`/`getSaveHandler()` never null; `setStore(null)` /
-  `setSaveHandler(null)` restore defaults; disabled ⇒ automatic dispatch
-  is dropped but programmatic methods still work; disposed ⇒ automatic
-  dispatch is dropped.
+  active store, save-handler, **fill-handler (STORY-006-004)**, enabled
+  flag; a single-thread executor for store I/O; the shared `SHIM_JS`
+  constant; the native-facing dispatch methods; and the programmatic API
+  the component delegates to (including `getAllCredentials()`,
+  STORY-006-005). Invariants: constructed once per component, lives for
+  its lifetime; `getStore()`/`getSaveHandler()`/`getFillHandler()` never
+  null; `setStore(null)` / `setSaveHandler(null)` / `setFillHandler(null)`
+  restore defaults; disabled ⇒ automatic dispatch is dropped but
+  programmatic methods still work; disposed ⇒ automatic dispatch is
+  dropped. The fill-handler is consulted (on the EDT) only on the
+  automatic autofill path, never on the programmatic read methods.
 
 - **WebViewComponent** (modified;
   `src/ca/weblite/webview/swing/WebViewComponent.java`). Gains:
   - `protected final PasswordDispatcher passwordDispatcher = new PasswordDispatcher(this);`
     (same eager-construction pattern as `dialogDispatcher`).
-  - the nine `final` public methods listed in R, each a thin delegation
-    to `passwordDispatcher`.
+  - the `final` public methods listed in R, each a thin delegation to
+    `passwordDispatcher` — the original nine plus
+    `setFillPasswordHandler` / `getFillPasswordHandler` (STORY-006-004)
+    and `getAllCredentials` (STORY-006-005).
 
 - **EmbeddedWebView** / **OffscreenWebView** (modified). Each gains
   `setPasswordCallback(WebViewPasswordCallback)` mirroring
@@ -306,20 +430,24 @@ generated_at: 2026-08-13T15:30:00-07:00
   new JNI entry point.
 
 - **WebViewNative** (modified). Gains the two `..._set_password_callback`
-  natives and the four `webview_cred_store_*` static natives.
+  natives and the `webview_cred_store_*` static natives — `save`, `find`,
+  `find_all` (STORY-006-005), `delete`, `available` (five total).
 
 - **`src_c/webview_embed.cpp`** (modified, macOS bodies + non-mac
   stubs). Gains: `Engine::password_callback` jobject field; a dedicated
   `WKScriptMessageHandler` registered under name `__webview_pw__` that
   reads the committed frame URL and calls the Java callback;
   `cocoa_set_password_callback`; the JNI bridge for the two callback
-  setters; and the macOS Keychain bodies for the four
-  `webview_cred_store_*` primitives (plus non-Apple stub bodies).
+  setters; and the macOS Keychain bodies for the five
+  `webview_cred_store_*` primitives — including `find_all`
+  (STORY-006-005), the two-phase `SecItemCopyMatching` with
+  `kSecMatchLimitAll` over the service namespace — plus non-Apple stub
+  bodies.
 
 - **`windows/webview_embed.cc`** (modified, stubs only in this canvas):
-  stub bodies for the four `webview_cred_store_*` primitives and the two
-  `..._set_password_callback` setters, so the JNI surface links on
-  Windows. Real Windows implementation is canvas 28.
+  stub bodies for the five `webview_cred_store_*` primitives (including
+  `find_all`) and the two `..._set_password_callback` setters, so the
+  JNI surface links on Windows. Real Windows implementation is canvas 28.
 
 - **`build-mac.sh`** (modified): add `-framework Security`.
 
@@ -360,6 +488,7 @@ class WebViewCredentialStore {
     +save(WebViewCredential) void
     +find(String) Optional~WebViewCredential~
     +findAll(String) List~WebViewCredential~
+    +findAll() List~WebViewCredential~
     +delete(String, String) boolean
 }
 
@@ -367,6 +496,7 @@ class NativeCredentialStore {
     +save(WebViewCredential) void
     +find(String) Optional~WebViewCredential~
     +findAll(String) List~WebViewCredential~
+    +findAll() List~WebViewCredential~
     +delete(String, String) boolean
 }
 
@@ -374,6 +504,7 @@ class InMemoryCredentialStore {
     +save(WebViewCredential) void
     +find(String) Optional~WebViewCredential~
     +findAll(String) List~WebViewCredential~
+    +findAll() List~WebViewCredential~
     +delete(String, String) boolean
 }
 
@@ -396,6 +527,25 @@ class WebViewSavePasswordHandler {
     +DEFAULT WebViewSavePasswordHandler$
 }
 
+class WebViewFillPasswordEvent {
+    +source() WebViewComponent
+    +origin() String
+    +username() String
+}
+
+class FillPasswordDisposition {
+    <<enumeration>>
+    FILL
+    DONT_FILL
+}
+
+class WebViewFillPasswordHandler {
+    <<interface>>
+    +onAutofillRequested(WebViewFillPasswordEvent) FillPasswordDisposition
+    +DEFAULT WebViewFillPasswordHandler$
+    +CONFIRM WebViewFillPasswordHandler$
+}
+
 class WebViewPasswordCallback {
     <<interface>>
     +onLoginSubmitted(String, String, String) void
@@ -410,6 +560,7 @@ class PasswordDispatcher {
     -source WebViewComponent
     -store WebViewCredentialStore
     -handler WebViewSavePasswordHandler
+    -fillHandler WebViewFillPasswordHandler
     -enabled boolean
     -disposed boolean
     +setEnabled(boolean) void
@@ -418,9 +569,12 @@ class PasswordDispatcher {
     +getStore() WebViewCredentialStore
     +setHandler(WebViewSavePasswordHandler) void
     +getHandler() WebViewSavePasswordHandler
+    +setFillHandler(WebViewFillPasswordHandler) void
+    +getFillHandler() WebViewFillPasswordHandler
     +saveCredential(WebViewCredential) void
     +getCredential(String) Optional~WebViewCredential~
     +getCredentials(String) List~WebViewCredential~
+    +getAllCredentials() List~WebViewCredential~
     +deleteCredential(String, String) boolean
     +dispatchLoginSubmitted(String, String, String) void
     +dispatchFillRequested(String) void
@@ -436,9 +590,12 @@ class WebViewComponent {
     +getCredentialStore() WebViewCredentialStore
     +setSavePasswordHandler(WebViewSavePasswordHandler) WebViewComponent
     +getSavePasswordHandler() WebViewSavePasswordHandler
+    +setFillPasswordHandler(WebViewFillPasswordHandler) WebViewComponent
+    +getFillPasswordHandler() WebViewFillPasswordHandler
     +saveCredential(WebViewCredential) void
     +getCredential(String) Optional~WebViewCredential~
     +getCredentials(String) List~WebViewCredential~
+    +getAllCredentials() List~WebViewCredential~
     +deleteCredential(String, String) boolean
 }
 
@@ -455,9 +612,12 @@ WebViewCredentialStore <|.. InMemoryCredentialStore
 WebViewComponent "1" *-- "1" PasswordDispatcher : owns
 PasswordDispatcher "1" --> "1" WebViewCredentialStore : reads/writes
 PasswordDispatcher "1" --> "1" WebViewSavePasswordHandler : asks
+PasswordDispatcher "1" --> "1" WebViewFillPasswordHandler : asks before fill
 PasswordDispatcher ..> WebViewSavePasswordEvent : constructs
+PasswordDispatcher ..> WebViewFillPasswordEvent : constructs
 PasswordDispatcher ..> Origins : canonicalises via
 WebViewSavePasswordHandler ..> SavePasswordDisposition : returns
+WebViewFillPasswordHandler ..> FillPasswordDisposition : returns
 NativeCredentialStore ..> Origins : canonicalises via
 InMemoryCredentialStore ..> Origins : canonicalises via
 EmbeddedWebView ..> WebViewPasswordCallback : invokes via JNI
@@ -772,15 +932,65 @@ File: `src/ca/weblite/webview/WebViewSavePasswordHandler.java`
    wants no UI overrides this to return a disposition directly; macOS
    coverage this iteration (forward-ref canvases 27/28 for Linux/Windows).
 
+### 5a. Create Enum — FillPasswordDisposition
+File: `src/ca/weblite/webview/FillPasswordDisposition.java` (STORY-006-004)
+
+1. Public enum with constants `FILL`, `DONT_FILL`. Javadoc: the
+   autofill-consent handler's decision.
+
+### 5b. Create Value Object — WebViewFillPasswordEvent
+File: `src/ca/weblite/webview/WebViewFillPasswordEvent.java` (STORY-006-004)
+
+1. Responsibility: immutable autofill-consent event handed to the
+   fill-handler. Deliberately **password-free**.
+2. Package-private constructor `(WebViewComponent source, String origin,
+   String username)`: null-check `source` (NPE `"source"`); coerce null
+   `origin`/`username` to empty.
+3. Accessors `source()`, `origin()`, `username()`. **No password
+   accessor and no password field** — the consent decision needs only
+   identity.
+4. `toString()` → `"WebViewFillPasswordEvent[origin=" + origin +
+   ", username=" + username + "]"` (no password to redact — there is
+   none).
+
+### 5c. Create Handler Interface — WebViewFillPasswordHandler
+File: `src/ca/weblite/webview/WebViewFillPasswordHandler.java` (STORY-006-004)
+
+1. Public `@FunctionalInterface`.
+2. `FillPasswordDisposition onAutofillRequested(WebViewFillPasswordEvent event)`
+   — invoked on the EDT before an automatic autofill.
+3. Public static constant `DEFAULT`:
+   - `WebViewFillPasswordHandler DEFAULT = event -> FillPasswordDisposition.FILL;`
+   - Returns `FILL` unconditionally — preserves the shipped
+     silent-autofill behaviour (hard backward-compat requirement) and is
+     the dispatcher's initial handler.
+4. Public static constant `CONFIRM`:
+   - `WebViewFillPasswordHandler CONFIRM = event -> { ... }`.
+   - Logic: `Window host = SwingUtilities.getWindowAncestor(event.source());`
+     `String msg = "Use the saved password for " + event.origin() + "?\n\nUsername: " + event.username();`
+     `int r = JOptionPane.showConfirmDialog(host, msg, "Use saved password?", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);`
+     `return r == JOptionPane.OK_OPTION ? FillPasswordDisposition.FILL : FillPasswordDisposition.DONT_FILL;`.
+   - Never include a password (the event has none).
+5. Class Javadoc: EDT invocation; must return promptly and must not block
+   on `evalAsync(...).get()`; exceptions are caught by the dispatcher and
+   forwarded to the default uncaught-exception handler; a host installs
+   `CONFIRM` (or a custom handler performing an OS biometric /
+   re-authentication check) to gate autofill and returns `DONT_FILL` to
+   decline; consulted only on automatic autofill, never on the
+   programmatic read API.
+
 ### 6. Create Store Interface — WebViewCredentialStore
 File: `src/ca/weblite/webview/WebViewCredentialStore.java`
 
-1. Public interface with the four methods from E. Method Javadoc: `save`
-   is upsert on `{origin, username}`; `find` returns the
-   most-recently-saved for the origin; `findAll` is most-recent-first and
-   unmodifiable; `delete` returns whether a record was removed. Implementations
-   must be safe to call from any thread and should not throw on a missing
-   backend (return empty / false).
+1. Public interface with the five methods from E. Method Javadoc: `save`
+   is upsert on `{origin, username}`; `find(origin)` returns the
+   most-recently-saved for the origin; `findAll(origin)` is
+   most-recent-first and unmodifiable; the no-argument `findAll()`
+   enumerates every credential under the library namespace across all
+   origins, most-recent-first and unmodifiable (empty when none / store
+   unavailable — STORY-006-005); `delete` returns whether a record was
+   removed. Implementations must be safe to call from any thread and
+   should not throw on a missing backend (return empty / false).
 
 ### 7. Create Store — NativeCredentialStore
 File: `src/ca/weblite/webview/NativeCredentialStore.java`
@@ -803,11 +1013,19 @@ File: `src/ca/weblite/webview/NativeCredentialStore.java`
      then username asc. Return `Collections.unmodifiableList`.
    - Native already returns most-recent-first, but Java re-sorts so the
      ordering contract holds identically across all three platforms.
-6. `delete(String origin, String username)`:
+6. `findAll()` (no argument, STORY-006-005):
+   - `String[] flat = WebViewNative.webview_cred_store_find_all(SERVICE);`
+     (try/catch → empty). Iterate in **quads** `[origin, username,
+     millisStr, password]`; build `WebViewCredential(origin, username,
+     password)` with the origin verbatim from the store (already
+     canonical, since only canonical origins are ever written); collect
+     with their `millis`. Sort by millis desc, then origin asc, then
+     username asc. Return `Collections.unmodifiableList`.
+7. `delete(String origin, String username)`:
    - canonicalise; if null → false; else
      `return WebViewNative.webview_cred_store_delete(SERVICE, o, username);`
      (try/catch → false).
-7. No password in any log / `toString`.
+8. No password in any log / `toString`.
 
 ### 8. Create Store — InMemoryCredentialStore
 File: `src/ca/weblite/webview/InMemoryCredentialStore.java`
@@ -824,7 +1042,11 @@ File: `src/ca/weblite/webview/InMemoryCredentialStore.java`
    asc; map to `WebViewCredential(origin, username, password)`;
    unmodifiable.
 5. `find`: first of `findAll`.
-6. `delete`: canonicalise; remove rec by username; return whether
+6. `findAll()` (no argument, STORY-006-005): iterate every origin's list,
+   flatten all `{origin, username, savedAtMillis, password}` records into
+   one collection, sort millis desc then origin asc then username asc,
+   map to `WebViewCredential(origin, username, password)`; unmodifiable.
+7. `delete`: canonicalise; remove rec by username; return whether
    removed.
 
 ### 9. Create JNI Callback Interface — WebViewPasswordCallback
@@ -848,6 +1070,7 @@ File: `src/ca/weblite/webview/PasswordDispatcher.java`
    - `private final WebViewComponent source;`
    - `private volatile WebViewCredentialStore store = new NativeCredentialStore();`
    - `private volatile WebViewSavePasswordHandler handler = WebViewSavePasswordHandler.DEFAULT;`
+   - `private volatile WebViewFillPasswordHandler fillHandler = WebViewFillPasswordHandler.DEFAULT;` (STORY-006-004)
    - `private volatile boolean enabled = true;`
    - `private volatile boolean disposed = false;`
    - `private final java.util.concurrent.ExecutorService io = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r, "webview-password-io"); t.setDaemon(true); return t; });`
@@ -858,11 +1081,15 @@ File: `src/ca/weblite/webview/PasswordDispatcher.java`
    - `getStore()` (never null).
    - `setHandler(WebViewSavePasswordHandler h)`: `handler = (h == null) ? WebViewSavePasswordHandler.DEFAULT : h;`.
    - `getHandler()` (never null).
+   - `setFillHandler(WebViewFillPasswordHandler h)`: `fillHandler = (h == null) ? WebViewFillPasswordHandler.DEFAULT : h;` (STORY-006-004).
+   - `getFillHandler()` (never null).
 6. Programmatic API (run synchronously on the caller thread so
-   round-trips are deterministic — AC8/AC9/AC10/AC11):
+   round-trips are deterministic — AC8/AC9/AC10/AC11). **These are trusted
+   host calls and are never gated by the fill handler**:
    - `saveCredential(WebViewCredential c)`: null-check; `store.save(c)`.
    - `getCredential(String origin)`: `return store.find(origin);`.
    - `getCredentials(String origin)`: `return store.findAll(origin);`.
+   - `getAllCredentials()`: `return store.findAll();` (STORY-006-005).
    - `deleteCredential(String origin, String username)`: `return store.delete(origin, username);`.
 7. Native-facing dispatch:
    - `dispatchLoginSubmitted(String frameUrl, String b64User, String b64Pass)`:
@@ -881,10 +1108,27 @@ File: `src/ca/weblite/webview/PasswordDispatcher.java`
      - if `disposed || !enabled` → return.
      - `String origin = Origins.canonical(frameUrl);` if null → return.
      - `io.execute(() -> doFill(origin));`
-   - `private void doFill(String origin)` (on io thread):
+   - `private void doFill(String origin)` (starts on io thread;
+     STORY-006-004 adds the EDT consent hop):
      - `Optional<WebViewCredential> c;` `try { c = store.find(origin); } catch (Throwable t) { forward(t); return; }`
      - if absent → return (AC19).
-     - `String js = "window.__webview_pw_fill__('" + base64UrlEncode(c.username()) + "','" + base64UrlEncode(c.password()) + "')";`
+     - `final WebViewCredential cred = c.get();`
+     - Marshal the consent decision to the EDT:
+       `SwingUtilities.invokeLater(() -> fillOnEdt(origin, cred));`
+       (the keychain read has already happened off the EDT; only the
+       host-controlled consent decision and the fire-and-forget eval run
+       on the EDT).
+   - `private void fillOnEdt(String origin, WebViewCredential cred)`
+     (on EDT, STORY-006-004):
+     - re-check `disposed || !enabled` → return (AC10: a manager disabled
+       between request and consent still fills nothing).
+     - `FillPasswordDisposition d;`
+       `try { WebViewFillPasswordEvent ev = new WebViewFillPasswordEvent(source, origin, cred.username()); d = fillHandler.onAutofillRequested(ev); } catch (Throwable t) { forward(t); return; }`
+       (the event carries no password — AC6; a handler exception fills
+       nothing and does not crash — AC11).
+     - if `d != FillPasswordDisposition.FILL` → return (DONT_FILL skips
+       silently — AC4/AC5).
+     - `String js = "window.__webview_pw_fill__('" + base64UrlEncode(cred.username()) + "','" + base64UrlEncode(cred.password()) + "')";`
      - `try { source.eval(js); } catch (Throwable t) { forward(t); }` — never log `js` (it embeds the password).
    - `private void safeSave(WebViewCredential c)`: `try { store.save(c); } catch (Throwable t) { forward(t); }`.
 8. `disposeAll()`: `disposed = true; io.shutdownNow();` (idempotent).
@@ -950,16 +1194,21 @@ File: `src/ca/weblite/webview/swing/WebViewComponent.java`
 
 1. Add field (next to `dialogDispatcher`):
    `protected final PasswordDispatcher passwordDispatcher = new PasswordDispatcher(this);`.
-2. Add nine `final` methods, each delegating:
+2. Add the `final` delegating methods (the original nine plus
+   `setFillPasswordHandler`/`getFillPasswordHandler` from STORY-006-004
+   and `getAllCredentials` from STORY-006-005):
    - `setPasswordManagerEnabled(boolean e)` → `passwordDispatcher.setEnabled(e); return this;`
    - `isPasswordManagerEnabled()` → `passwordDispatcher.isEnabled();`
    - `setCredentialStore(WebViewCredentialStore s)` → `passwordDispatcher.setStore(s); return this;`
    - `getCredentialStore()` → `passwordDispatcher.getStore();`
    - `setSavePasswordHandler(WebViewSavePasswordHandler h)` → `passwordDispatcher.setHandler(h); return this;`
    - `getSavePasswordHandler()` → `passwordDispatcher.getHandler();`
+   - `setFillPasswordHandler(WebViewFillPasswordHandler h)` → `passwordDispatcher.setFillHandler(h); return this;` (STORY-006-004)
+   - `getFillPasswordHandler()` → `passwordDispatcher.getFillHandler();` (STORY-006-004)
    - `saveCredential(WebViewCredential c)` → `passwordDispatcher.saveCredential(c);`
    - `getCredential(String origin)` → `passwordDispatcher.getCredential(origin);`
    - `getCredentials(String origin)` → `passwordDispatcher.getCredentials(origin);`
+   - `getAllCredentials()` → `passwordDispatcher.getAllCredentials();` (STORY-006-005)
    - `deleteCredential(String origin, String u)` → `passwordDispatcher.deleteCredential(origin, u);`
 3. In the existing `dispose()` path, call `passwordDispatcher.disposeAll()`
    alongside the existing `dialogDispatcher.disposeAll()` (both swing
@@ -992,9 +1241,13 @@ File: `src/ca/weblite/webview/WebViewNative.java`
 1. Add two callback-setter declarations (after the dialog ones):
    - `native static void webview_embed_set_password_callback(long w, WebViewPasswordCallback cb);`
    - `native static void webview_offscreen_set_password_callback(long peer, WebViewPasswordCallback cb);`
-2. Add four static store declarations:
+2. Add five static store declarations:
    - `native static boolean webview_cred_store_save(String service, String origin, String username, String password, long savedAtMillis);`
    - `native static String[] webview_cred_store_find(String service, String origin);`
+   - `native static String[] webview_cred_store_find_all(String service);`
+     — flat quads `[origin, username, savedAtMillis, password, ...]` across
+     all origins under the namespace; empty when none / unavailable
+     (STORY-006-005).
    - `native static boolean webview_cred_store_delete(String service, String origin, String username);`
    - `native static boolean webview_cred_store_available();`
 3. Class-level note that headers are javah-optional; the mangled
@@ -1049,23 +1302,47 @@ File: `src_c/webview_embed.cpp` (guarded `#if defined(WEBVIEW_COCOA)`)
      Collect `[username, millis, password]` per item. Return a
      `jobjectArray` of the flat triples (Java sorts). Empty array when
      phase 1 yields `errSecItemNotFound` or no accounts.
+   - `webview_cred_store_find_all` (STORY-006-005): the enumerate-all
+     variant of `find`, across every origin. Because each item's
+     `kSecAttrService` is `"<namespace>:<origin>"` (origin embedded in the
+     service, plain username as the account — the encoding `save`/`find`
+     already use), there is no single service value covering all origins,
+     and the Keychain has no prefix query. So enumerate every
+     generic-password item and filter by the `"<service>:"` service
+     prefix in C. Same two-phase discipline (the `kSecMatchLimitAll` +
+     `kSecReturnData` combination still returns `errSecParam`). Phase 1 —
+     query `kSecClass=kSecClassGenericPassword` + `kSecMatchLimitAll` +
+     `kSecReturnAttributes=true` (no `kSecReturnData`, no service filter)
+     to enumerate every item's `kSecAttrService` + `kSecAttrAccount`;
+     keep only items whose service begins with `"<service>:"`, take
+     `origin` = the service text after that prefix and `username` = the
+     account. Phase 2 — for each kept item, issue a single-item
+     `kSecAttrService=<that full service>` + `kSecAttrAccount=<username>`
+     + `kSecMatchLimitOne` + `kSecReturnData=true` query to fetch its
+     `kSecValueData`; split on the first `\n` into millis + password.
+     Emit a flat **quad** `[origin, username, millis, password]` per
+     kept item. Return a `jobjectArray` of the flat quads (Java sorts).
+     Empty array when phase 1 yields `errSecItemNotFound` or no matching
+     items. No `NSLog` of any password.
    - `webview_cred_store_delete`: `SecItemDelete` with exact account;
      return `errSecSuccess || errSecItemNotFound ? (removed?)` — return
      `true` only when an item was actually deleted (`errSecSuccess`).
    - `webview_cred_store_available`: return `true`.
    - All string↔`CFString` conversions via `CFStringCreateWithCString`
      UTF-8; release every created CF object; no NSLog of passwords.
-8. Non-Apple compilation of this file (`#else`): stub bodies for the four
-   store primitives (`false` / empty `jobjectArray` / `false`) and the
-   two setters, so the Linux build of `webview_embed.cpp` links until
-   canvas 27 replaces them.
+8. Non-Apple compilation of this file (`#else`): stub bodies for the five
+   store primitives — `save`→`false`, `find`→empty `jobjectArray`,
+   `find_all`→empty `jobjectArray`, `delete`→`false`,
+   `available`→`false` — and the two setters, so the Linux build of
+   `webview_embed.cpp` links until canvas 27 replaces them.
 
 ### 17. Windows native stubs
 File: `windows/webview_embed.cc`
 
 1. Add stub `JNIEXPORT` bodies for `webview_embed_set_password_callback`,
-   `webview_offscreen_set_password_callback`, and the four
-   `webview_cred_store_*` primitives (`false` / empty / `false`) so the
+   `webview_offscreen_set_password_callback`, and the five
+   `webview_cred_store_*` primitives — `save`→`false`, `find`→empty,
+   `find_all`→empty, `delete`→`false`, `available`→`false` — so the
    Windows binary links. Real implementation is canvas 28.
 
 ### 18. Wire the bridge — WebViewHeavyweightComponent
@@ -1110,12 +1387,18 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    demo's "origin" is whatever the page loads as).
 3. Controls: a store-mode `JComboBox` (`Native Keychain` /
    `In-memory`) calling `setCredentialStore(...)`; an "Enabled"
-   `JCheckBox` calling `setPasswordManagerEnabled(...)`; buttons
-   `Save (programmatic)`, `Get`, `Delete` that call the programmatic API
-   for a fixed origin; a log pane that prints capture events and results
-   with passwords redacted.
-4. Comment at top: exercises AC1–AC14 interactively; passwords are never
-   printed.
+   `JCheckBox` calling `setPasswordManagerEnabled(...)`; a
+   "Confirm before autofill" `JCheckBox` that installs
+   `WebViewFillPasswordHandler.CONFIRM` when checked and
+   `setFillPasswordHandler(null)` (→ `DEFAULT`) when unchecked
+   (STORY-006-004); buttons `Save (programmatic)`, `Get`, `Delete` that
+   call the programmatic API for a fixed origin, plus a `Get All` button
+   that calls `getAllCredentials()` and lists each stored credential as
+   `origin` + `username` only (STORY-006-005); a log pane that prints
+   capture events and results with passwords redacted.
+4. Comment at top: exercises the STORY-006-001 ACs plus the fill-consent
+   toggle (006-004) and enumerate-all (006-005) interactively; passwords
+   are never printed.
 5. Follow the existing demo layout and the `run-{linux,mac}-*.sh` script
    convention at the repo root; add a top-level `run-mac-password-demo.sh`
    alongside the existing ones. It mirrors `run-mac-download-demo.sh`:
@@ -1154,12 +1437,19 @@ File: `README.md`
 
 1. New "Password manager" subsection (sibling of "Browser-initiated
    dialogs"): the `setPasswordManagerEnabled` default-on switch; the
-   store + save-handler seams; origin = scheme+host+port and exact-origin
+   store + save-handler seams; the **fill-consent seam**
+   (`setFillPasswordHandler`; `WebViewFillPasswordHandler.CONFIRM` for a
+   browser-style "use saved password?" prompt, or a custom handler for an
+   OS biometric / re-auth check before autofill — default is silent
+   autofill, STORY-006-004); the **enumerate-all** method
+   (`getAllCredentials()`) a host uses to build a "manage saved passwords"
+   UI (STORY-006-005); origin = scheme+host+port and exact-origin
    autofill; that credentials live only in the OS store (Keychain on
    macOS this iteration; libsecret / Credential Manager to follow); the
    security note that an autofilled value is readable by page scripts
-   (browser-parity) and that the library never logs or files passwords;
-   the macOS-only coverage caveat with a forward reference to the Linux /
+   (browser-parity), that the fill-consent event never carries the
+   password, and that the library never logs or files passwords; the
+   macOS-only coverage caveat with a forward reference to the Linux /
    Windows canvases.
 2. List `WebViewPasswordDemo` under the demos paragraph.
 
@@ -1175,7 +1465,12 @@ Files under `test/ca/weblite/webview/`:
 3. `InMemoryCredentialStoreTest`: save→find; upsert (Operation-10
    overwrite, single record); multiple usernames retained + `find`
    returns most-recent (AC11); delete; origin canonicalisation applied on
-   both save and query.
+   both save and query. **Enumerate-all (STORY-006-005):** `findAll()`
+   with no argument returns every credential across multiple origins
+   (006-005 AC1), ordered most-recently-saved first (AC2), including
+   multiple usernames on one origin (AC3); an empty store returns an
+   empty non-null list (AC4); a `delete` is reflected in a subsequent
+   `findAll()` (AC5).
 4. `PasswordDispatcherTest` (no engine, no Keychain — inject an
    `InMemoryCredentialStore` and a recording handler):
    - `dispatchLoginSubmitted` with a `SAVE` handler stores the decoded
@@ -1190,11 +1485,31 @@ Files under `test/ca/weblite/webview/`:
    - `dispatchFillRequested` with a stored credential invokes
      `source.eval(...)` with a `__webview_pw_fill__` call carrying the
      base64url username/password (use a `WebViewComponent` test double /
-     spy capturing the eval string; assert the raw password is NOT the
-     literal in the string — it is base64url-encoded); with no stored
-     credential, `eval` is never called (AC19).
+     spy capturing the eval string; because the fill now hops to the EDT
+     for consent, drain the EDT via `SwingUtilities.invokeAndWait(()->{})`
+     before asserting; assert the raw password is NOT the literal in the
+     string — it is base64url-encoded); with no stored credential, `eval`
+     is never called (AC19).
+   - **Fill-consent (STORY-006-004):** with the default fill-handler a
+     stored credential still evals (006-004 AC1 no-regression); with
+     `setFillHandler(e -> FillPasswordDisposition.DONT_FILL)` a stored
+     credential does NOT eval (AC4/AC5); the `WebViewFillPasswordEvent`
+     handed to a recording handler exposes origin + username, has no
+     password accessor, and its `toString()` omits the password (AC6);
+     the fill-handler runs on the EDT (record
+     `SwingUtilities.isEventDispatchThread()`, AC7); a throwing
+     fill-handler does not propagate and evals nothing (AC11);
+     `getFillHandler()` is never null and `setFillHandler(null)` restores
+     `DEFAULT` (AC8); a `DONT_FILL` fill-handler does not gate the
+     programmatic `getCredential` (AC9); a disabled manager evals nothing
+     regardless of the fill-handler (AC10).
+   - **Enumerate-all via dispatcher (STORY-006-005):** with an injected
+     `InMemoryCredentialStore` holding credentials for several origins,
+     `getAllCredentials()` returns them all most-recent-first (006-005
+     AC1/AC2/AC6).
    - password never appears in `WebViewCredential.toString()` /
-     `WebViewSavePasswordEvent.toString()` (AC18).
+     `WebViewSavePasswordEvent.toString()` /
+     `WebViewFillPasswordEvent.toString()` (AC18 / 006-004 AC6).
 
 ## N · Norms
 
@@ -1242,6 +1557,28 @@ Files under `test/ca/weblite/webview/`:
   single-thread executor. The programmatic API runs synchronously on the
   caller's thread by contract (documented) so round-trips are
   deterministic.
+- **The fill-consent handler mirrors the save handler (STORY-006-004).**
+  `WebViewFillPasswordHandler` follows `WebViewSavePasswordHandler`
+  one-for-one: a `@FunctionalInterface`, EDT invocation, a `DEFAULT`
+  constant, a component setter/getter with the never-null +
+  null-restores-default invariant, and dispatcher-level try/catch
+  exception isolation via `forward`. Its `DEFAULT` returns `FILL`, so the
+  shipped autofill behaviour is unchanged unless a host opts in; the
+  keychain read stays on the worker while only the consent decision + the
+  fire-and-forget eval run on the EDT.
+- **The fill-consent event is password-free (STORY-006-004).**
+  `WebViewFillPasswordEvent` exposes only `{source, origin, username}` —
+  no password field, no password accessor. The consent decision needs
+  identity, not the secret; the password is never handed to host consent
+  code. (Contrast `WebViewSavePasswordEvent`, which must expose the
+  captured password so a host can inspect a *newly submitted* credential.)
+- **Enumerate-all reuses the per-origin `findAll` semantics
+  (STORY-006-005).** The no-argument `findAll()` applies the same
+  recency ordering, dedup, unmodifiable-list, and graceful-degradation
+  (empty on unavailable, never throw) contract as origin-scoped
+  `findAll(origin)`, across every origin under the library namespace. The
+  native quad `[origin, username, millis, password]` is the enumerate-all
+  analogue of the origin-scoped triple `[username, millis, password]`.
 - **Demo / test conventions** match the dialog feature: single-source
   demos under `demos/<Name>/src/...`, no Maven; tests under
   `test/ca/weblite/webview/`, headless, no `JFrame` shown, EDT via
@@ -1277,6 +1614,22 @@ Files under `test/ca/weblite/webview/`:
   sets field values and dispatches events; it never reads or returns a
   credential. A page invoking it directly can only fill its own form with
   attacker-chosen text.
+- **Autofill consent gates the automatic path only (STORY-006-004).**
+  `doFill` consults `WebViewFillPasswordHandler` on the EDT before
+  evaling; `DONT_FILL` skips the injection with no side effect. The
+  handler receives a **password-free** `WebViewFillPasswordEvent`
+  (`{source, origin, username}`), so host consent code — including a
+  biometric/re-auth check — never sees the secret. A handler exception is
+  caught and forwarded; nothing is filled. The programmatic read API
+  (`getCredential`/`getCredentials`/`getAllCredentials`) is trusted host
+  code and is deliberately NOT gated by this handler.
+- **Enumerate-all is host-Java-only (STORY-006-005).**
+  `getAllCredentials()` / `WebViewCredentialStore.findAll()` return
+  credentials only to the calling host Java, exactly as origin-scoped
+  `find`/`findAll` already do. No reserved channel or injected global
+  exposes enumeration to page JavaScript; the fill script stays
+  write-only and origin-scoped. Enumerate results are subject to the same
+  no-logging / redacted-`toString` password discipline.
 - **No prompt without a password field.** `findFields()` returns null when
   the document has no `input[type=password]`, so a plain search-form
   submit never posts `S|...` and never triggers "Save password?"

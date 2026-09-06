@@ -589,6 +589,11 @@ native static boolean webview_cred_store_save(String service, String origin,
 // (Java re-sorts regardless).  Empty array when none / unavailable.
 native static String[] webview_cred_store_find(String service, String origin);
 
+// Return every credential under {service} across all origins as flat quads
+// [origin, username, savedAtMillisString, password, ...] (Java re-sorts).
+// Empty array when none / unavailable.  Backs enumerate-all (getAllCredentials).
+native static String[] webview_cred_store_find_all(String service);
+
 // Remove the credential for {service, origin, username}.  Returns whether a
 // credential was actually removed.
 native static boolean webview_cred_store_delete(String service, String origin,

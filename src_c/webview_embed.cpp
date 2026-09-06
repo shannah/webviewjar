@@ -7975,6 +7975,110 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
 #endif
 }
 
+JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1find_1all
+  (JNIEnv *env, jclass, jstring jservice) {
+    jclass strCls = env->FindClass("java/lang/String");
+#if defined(WEBVIEW_COCOA)
+    const char *service = env->GetStringUTFChars(jservice, nullptr);
+    std::string prefix = std::string(service ? service : "") + ":";
+    // Each item's kSecAttrService is "<namespace>:<origin>" (origin embedded
+    // in the service, plain username as the account), so there is no single
+    // service value covering all origins and the keychain has no prefix
+    // query.  Enumerate every generic-password item and keep those whose
+    // service starts with "<service>:".  Two phases as in find: the
+    // kSecMatchLimitAll + kSecReturnData combination returns errSecParam.
+    std::vector<std::string> quads;
+    const void *q1k[] = { kSecClass, kSecMatchLimit, kSecReturnAttributes };
+    const void *q1v[] = { kSecClassGenericPassword, kSecMatchLimitAll,
+                          kCFBooleanTrue };
+    CFDictionaryRef q1 = CFDictionaryCreate(kCFAllocatorDefault, q1k, q1v, 3,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFTypeRef listResult = nullptr;
+    OSStatus st = SecItemCopyMatching(q1, &listResult);
+    if (st == errSecSuccess && listResult) {
+        CFArrayRef arr = (CFArrayRef)listResult;
+        CFIndex n = CFArrayGetCount(arr);
+        for (CFIndex i = 0; i < n; i++) {
+            CFDictionaryRef item =
+                (CFDictionaryRef)CFArrayGetValueAtIndex(arr, i);
+            CFStringRef svcAttr =
+                (CFStringRef)CFDictionaryGetValue(item, kSecAttrService);
+            CFStringRef acct =
+                (CFStringRef)CFDictionaryGetValue(item, kSecAttrAccount);
+            if (!svcAttr || !acct) continue;
+            // Read the full service string.
+            CFIndex svcMax = CFStringGetMaximumSizeForEncoding(
+                CFStringGetLength(svcAttr), kCFStringEncodingUTF8) + 1;
+            std::vector<char> svcBuf((size_t)svcMax);
+            if (!CFStringGetCString(svcAttr, svcBuf.data(), svcMax,
+                                    kCFStringEncodingUTF8)) {
+                continue;
+            }
+            std::string fullSvc = svcBuf.data();
+            // Keep only our namespace; derive origin from the suffix.
+            if (fullSvc.size() < prefix.size()
+                    || fullSvc.compare(0, prefix.size(), prefix) != 0) {
+                continue;
+            }
+            std::string origin = fullSvc.substr(prefix.size());
+            // Read the account (username).
+            CFIndex acctMax = CFStringGetMaximumSizeForEncoding(
+                CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
+            std::vector<char> acctBuf((size_t)acctMax);
+            if (!CFStringGetCString(acct, acctBuf.data(), acctMax,
+                                    kCFStringEncodingUTF8)) {
+                continue;
+            }
+            std::string username = acctBuf.data();
+            std::string millisStr = "0", password;
+            // Phase 2: fetch this item's secret by exact service+account.
+            const void *q2k[] = { kSecClass, kSecAttrService, kSecAttrAccount,
+                                  kSecMatchLimit, kSecReturnData };
+            const void *q2v[] = { kSecClassGenericPassword, svcAttr, acct,
+                                  kSecMatchLimitOne, kCFBooleanTrue };
+            CFDictionaryRef q2 = CFDictionaryCreate(kCFAllocatorDefault,
+                q2k, q2v, 5, &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks);
+            CFTypeRef dataResult = nullptr;
+            if (SecItemCopyMatching(q2, &dataResult) == errSecSuccess
+                    && dataResult) {
+                CFDataRef data = (CFDataRef)dataResult;
+                const UInt8 *bytes = CFDataGetBytePtr(data);
+                CFIndex len = CFDataGetLength(data);
+                std::string blob((const char *)bytes, (size_t)len);
+                size_t nl = blob.find('\n');
+                if (nl != std::string::npos) {
+                    millisStr = blob.substr(0, nl);
+                    password = blob.substr(nl + 1);
+                } else {
+                    password = blob;
+                }
+            }
+            if (dataResult) CFRelease(dataResult);
+            CFRelease(q2);
+            quads.push_back(origin);
+            quads.push_back(username);
+            quads.push_back(millisStr);
+            quads.push_back(password);
+        }
+    }
+    if (listResult) CFRelease(listResult);
+    CFRelease(q1);
+    if (service) env->ReleaseStringUTFChars(jservice, service);
+    jobjectArray out =
+        env->NewObjectArray((jsize)quads.size(), strCls, nullptr);
+    for (size_t i = 0; i < quads.size(); i++) {
+        jstring js = env->NewStringUTF(quads[i].c_str());
+        env->SetObjectArrayElement(out, (jsize)i, js);
+        env->DeleteLocalRef(js);
+    }
+    return out;
+#else
+    (void)jservice;
+    return env->NewObjectArray(0, strCls, nullptr);
+#endif
+}
+
 JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1delete
   (JNIEnv *env, jclass, jstring jservice, jstring jorigin, jstring juser) {
 #if defined(WEBVIEW_COCOA)

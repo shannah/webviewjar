@@ -14,6 +14,10 @@
  *   2. Reload (the "Reload" button)            -> fields auto-fill.
  *   3. Use the Save / Get / Delete buttons     -> programmatic API.
  *   4. Toggle "Enabled" and the store combo    -> gating + store swap.
+ *   5. "Get All"                               -> enumerate every stored
+ *                                                 credential (006-005).
+ *   6. "Confirm before autofill"               -> browser-style consent
+ *                                                 prompt before fill (006-004).
  *
  * Coverage: macOS (Keychain) and Windows (Credential Manager) are wired
  * for automatic capture/fill.  On Linux the programmatic API works but
@@ -26,6 +30,7 @@ import ca.weblite.webview.ConsoleListener;
 import ca.weblite.webview.ConsoleMessage;
 import ca.weblite.webview.InMemoryCredentialStore;
 import ca.weblite.webview.WebViewCredential;
+import ca.weblite.webview.WebViewFillPasswordHandler;
 import ca.weblite.webview.swing.WebViewComponent;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -139,13 +144,35 @@ public class WebViewPasswordDemo {
         delete.addActionListener(e ->
             append("deleteCredential(demo) -> " + wv.deleteCredential(origin, "demo")));
 
+        // STORY-006-005: enumerate every stored credential across all origins.
+        JButton getAll = new JButton("Get All");
+        getAll.addActionListener(e -> {
+            List<WebViewCredential> all = wv.getAllCredentials();
+            append("getAllCredentials() -> " + all.size() + " credential(s):");
+            for (WebViewCredential c : all) {
+                // origin + username only — never the password.
+                append("  " + c.origin() + "  (username=" + c.username() + ")");
+            }
+        });
+
+        // STORY-006-004: opt into a browser-style confirm before autofill.
+        JCheckBox confirmFill = new JCheckBox("Confirm before autofill", false);
+        confirmFill.addActionListener(e -> {
+            wv.setFillPasswordHandler(confirmFill.isSelected()
+                ? WebViewFillPasswordHandler.CONFIRM : null);
+            append("autofill consent = "
+                + (confirmFill.isSelected() ? "CONFIRM" : "DEFAULT (silent)"));
+        });
+
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT));
         controls.add(new JLabel("Store:"));
         controls.add(storeCombo);
         controls.add(enabled);
+        controls.add(confirmFill);
         controls.add(reload);
         controls.add(save);
         controls.add(get);
+        controls.add(getAll);
         controls.add(delete);
 
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, wv, logScroll);

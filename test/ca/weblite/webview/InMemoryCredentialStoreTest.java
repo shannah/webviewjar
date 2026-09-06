@@ -13,6 +13,7 @@ import java.util.Optional;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 /** Unit tests for {@link InMemoryCredentialStore} (also exercises the
@@ -67,5 +68,42 @@ public class InMemoryCredentialStoreTest {
     @Test public void unparseableOriginIsNoOp() {
         store.save(new WebViewCredential("about:blank", "a", "p"));
         assertTrue(store.findAll("about:blank").isEmpty());
+    }
+
+    // ---- STORY-006-005: enumerate-all --------------------------------
+
+    @Test public void findAllAcrossOriginsMostRecentFirst() {
+        store.save(new WebViewCredential("https://a.example", "alice", "pw1"));
+        store.save(new WebViewCredential("https://b.example", "bob", "pw2"));
+        store.save(new WebViewCredential("https://c.example", "carol", "pw3"));
+        List<WebViewCredential> all = store.findAll();
+        assertEquals(3, all.size());
+        assertEquals("carol", all.get(0).username());
+        assertEquals("bob", all.get(1).username());
+        assertEquals("alice", all.get(2).username());
+    }
+
+    @Test public void findAllIncludesMultipleUsernamesPerOrigin() {
+        store.save(new WebViewCredential("https://svc.example", "bob", "pw1"));
+        store.save(new WebViewCredential("https://svc.example", "carol", "pw2"));
+        store.save(new WebViewCredential("https://other.example", "dan", "pw3"));
+        List<WebViewCredential> all = store.findAll();
+        assertEquals(3, all.size());
+    }
+
+    @Test public void findAllEmptyStoreIsEmptyList() {
+        List<WebViewCredential> all = store.findAll();
+        assertNotNull(all);
+        assertTrue(all.isEmpty());
+    }
+
+    @Test public void findAllReflectsDeletion() {
+        store.save(new WebViewCredential("https://a.example", "alice", "pw1"));
+        store.save(new WebViewCredential("https://b.example", "bob", "pw2"));
+        assertTrue(store.delete("https://a.example", "alice"));
+        List<WebViewCredential> all = store.findAll();
+        assertEquals(1, all.size());
+        assertEquals("https://b.example", all.get(0).origin());
+        assertEquals("bob", all.get(0).username());
     }
 }

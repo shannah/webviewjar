@@ -27,13 +27,15 @@ generated_at: 2026-08-13T16:00:00-07:00
      `webview_embed_set_password_callback` (and the offscreen setter as a
      no-op — Windows has no offscreen engine), following the existing
      `webview_embed_set_dialog_callback` JNI export.
-  2. **Credential Manager store:** replace the canvas-23 Windows stub
-     bodies of the four `webview_cred_store_*` primitives with a Win32
-     Credential Manager implementation (`CredWriteW` / `CredReadW` /
-     `CredEnumerateW` / `CredDeleteW`, `CRED_TYPE_GENERIC`), matching the
-     macOS/Linux semantics exactly (same value encoding `millis + "\n" +
-     password`, same origin/username keying, same most-recent-first
-     contract — Java re-sorts).
+  2. **Credential Manager store:** replace the canvas-26 Windows stub
+     bodies of the five `webview_cred_store_*` primitives — including
+     `webview_cred_store_find_all` (the no-argument enumerate-all across
+     every origin, STORY-006-005) — with a Win32 Credential Manager
+     implementation (`CredWriteW` / `CredReadW` / `CredEnumerateW` /
+     `CredDeleteW`, `CRED_TYPE_GENERIC`), matching the macOS/Linux
+     semantics exactly (same value encoding `millis + "\n" + password`,
+     same origin/username keying, same most-recent-first contract — Java
+     re-sorts).
   3. **Suppress Edge's built-in password autosave** so it never competes
      with the library's Swing prompt: at engine creation, after acquiring
      the settings object, `QueryInterface` for `ICoreWebView2Settings4`
@@ -45,7 +47,9 @@ generated_at: 2026-08-13T16:00:00-07:00
   `L"ca.weblite.webview.passwords:" + base64url(origin) + "|" + base64url(username)`
   (the same namespace prefix used as the `service` on the other platforms,
   followed by the same account encoding). `CredEnumerateW` with filter
-  `L"ca.weblite.webview.passwords:*"` backs `find`. The
+  `L"ca.weblite.webview.passwords:*"` backs both `find` (keeping only the
+  matching origin) and `find_all` (keeping every entry and emitting its
+  origin, STORY-006-005). The
   `CredentialBlob` holds the UTF-8 (or UTF-16) `millis + "\n" + password`
   bytes; `Persist = CRED_PERSIST_LOCAL_MACHINE` (per-user local; DPAPI
   protects the blob).
@@ -60,6 +64,9 @@ generated_at: 2026-08-13T16:00:00-07:00
   file-picker carve-out) — all 13 STORY-006-003 ACs are achievable.
 - Definition of Done:
   - All 13 STORY-006-003 ACs pass on Windows 11 with the WebView2 Runtime.
+  - STORY-006-005 AC7 on Windows: `getAllCredentials()` round-trips every
+    stored credential across origins via `CredEnumerateW` over the
+    namespace prefix.
   - `WebViewPasswordDemo` (canvas 26) works unchanged on Windows.
   - README's "Password manager" subsection updates coverage to
     all-three-platforms, with the Windows note: the library's own manager
@@ -90,7 +97,7 @@ generated_at: 2026-08-13T16:00:00-07:00
   - `fire_password_submitted` / `fire_password_fill_requested` (Windows
     JNI fire helpers; mirror the dialog `onAlert`/`onConfirm` GetMethodID
     helpers at `:276`/`:318`).
-  - Win32 Credential Manager bodies for the four `webview_cred_store_*`
+  - Win32 Credential Manager bodies for the five `webview_cred_store_*`
     primitives (replacing the canvas-23 Windows stubs).
   - JNI bridges for `webview_embed_set_password_callback` (→ store the
     global ref, mirroring the dialog setter at `:2365`) and
@@ -141,6 +148,12 @@ No new classes; the class model is canvas 26's.
      origin equals the (canonical) target origin, read the blob, split on
      the first `\n` → millis, password; emit `[username, millis, password]`.
      `CredFree(creds)`. Java sorts. Empty on none.
+   - **find_all** (STORY-006-005): the enumerate-all variant of `find` —
+     the same `CredEnumerateW(L"ca.weblite.webview.passwords:*", ...)`
+     enumeration, but **without** the origin filter: for every entry
+     decode `TargetName` into origin + username, read the blob, split into
+     millis + password, and emit flat **quads** `[origin, username,
+     millis, password]`. `CredFree(creds)`. Java sorts. Empty on none.
    - **delete**: reconstruct the exact `TargetName`; `CredDeleteW(target,
      CRED_TYPE_GENERIC, 0)`; return success (`true` only when actually
      deleted).
@@ -245,6 +258,18 @@ File: `windows/webview_embed.cc`
    millis, password; append `username`, `millis`, `password`.
 3. `CredFree(creds);` build + return the flat `jobjectArray` (empty on
    none). Java sorts.
+
+### 5a. Implement webview_cred_store_find_all (STORY-006-005)
+File: `windows/webview_embed.cc`
+
+1. `PCREDENTIALW* creds = nullptr; DWORD count = 0; if (!CredEnumerateW(L"ca.weblite.webview.passwords:*", 0, &count, &creds)) return empty jobjectArray;`
+2. For each `creds[i]`: parse `TargetName` after the prefix into
+   `b64origin|b64username`; base64url-decode → origin, username (no origin
+   filter — every entry is kept); read the blob
+   (`CredentialBlob`/`CredentialBlobSize`) as UTF-8, split on first `\n` →
+   millis, password; append `origin`, `username`, `millis`, `password`.
+3. `CredFree(creds);` build + return the flat **quad** `jobjectArray`
+   (empty on none). Java sorts. Never log the blob.
 
 ### 6. Implement webview_cred_store_delete
 File: `windows/webview_embed.cc`

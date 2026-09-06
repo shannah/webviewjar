@@ -55,10 +55,14 @@ STORY-006-001 (Java API contract + shared detection/fill JS + macOS Keychain)
         │
         ├──► STORY-006-002 (Linux libsecret) — depends on the Java contract + shared JS from 006-001
         │
-        └──► STORY-006-003 (Windows Credential Manager) — depends on the Java contract + shared JS from 006-001
+        ├──► STORY-006-003 (Windows Credential Manager) — depends on the Java contract + shared JS from 006-001
+        │
+        ├──► STORY-006-004 (Autofill-consent handler) — Java-contract-only; depends on 006-001; cross-platform by construction
+        │
+        └──► STORY-006-005 (Enumerate-all credentials) — extends the store seam; Java contract + native enumerate on macOS/Linux/Windows
 ```
 
-STORY-006-002 and STORY-006-003 can be developed in parallel once STORY-006-001 has landed.
+STORY-006-002 and STORY-006-003 can be developed in parallel once STORY-006-001 has landed. STORY-006-004 and STORY-006-005 are follow-on enhancements that build on the shipped contract (006-001) and, for 006-005's native enumerate bodies, the per-platform stores from 006-002 / 006-003. **Both reverse a Scope-Out item that STORY-006-001 originally deferred**: 006-004 reverses "Biometric / re-authentication gating before autofill", and 006-005 reverses "A credential-management UI … Hosts build their own on top of the programmatic API" by supplying the missing enumerate-all primitive that a management UI needs.
 
 ---
 
@@ -509,6 +513,236 @@ Key points:
 
 ---
 
+## [STORY-006-004] Autofill-Consent Handler (Confirm / Re-Authenticate Before Fill)
+
+### Background
+
+STORY-006-001 shipped the password manager with a deliberately asymmetric consent model. The **save** direction is gated: a captured login submission is routed through a `WebViewSavePasswordHandler` policy (default: a Swing "Save password?" prompt) that decides SAVE vs DON'T-SAVE before anything is written. The **fill** direction is *not* gated: on page load, when the manager is enabled and a credential exists for the origin, the library injects the username + password into the detected fields automatically, with no policy consulted and no confirmation shown.
+
+That silent autofill is fine for many hosts, but it diverges from what mainstream browsers actually do. Chrome, Edge, and Safari's password managers typically **confirm** a fill and, on managed or sensitive systems, **re-authenticate** the user (OS login password, Windows Hello, Touch ID / biometric) before revealing or filling a stored password. A host embedding `WebViewComponent` today has no seam to insert that step: the fill path runs from store lookup straight to injection.
+
+This story adds the missing seam — a fill-side policy exactly symmetric to the save-side one — so a host can require confirmation and/or an OS re-auth before autofill, and can decline a fill. It **explicitly reverses** the STORY-006-001 Scope-Out item *"Biometric / re-authentication gating before autofill (Touch ID prompt per fill). Out of scope; the OS unlocks the Keychain at login."* — not by shipping a biometric implementation itself, but by providing the decision point at which a host (or a future platform enhancement) can perform that gating.
+
+Key points:
+- Business value: brings the embedded WebView's autofill into line with browser-grade "confirm before fill" behaviour and unblocks hosts that must re-authenticate the user before a credential is revealed.
+- Relationship with other features: mirrors `WebViewSavePasswordHandler` one-for-one (policy interface + Swing default + component setter/getter, invoked on the EDT), reusing the same dispatch discipline.
+- Why now: with save + autofill shipped and being adopted, the silent-fill behaviour is the next gap between "works" and "behaves like a real browser's password manager".
+
+### Business Value
+
+- Provide a **fill-consent decision point** so a host can show a browser-style "Use saved password for `<origin>`?" confirmation before autofill occurs.
+- Provide a **re-authentication seam** so a host can require an OS credential / biometric (Touch ID, Windows Hello) check and decline the fill if it fails — without the library shipping or mandating any particular biometric mechanism.
+- Preserve the **zero-configuration happy path**: hosts that do nothing keep today's automatic autofill (no behavioural regression).
+- Keep the fill decision **password-free**: the decision is made from the origin + username only; the stored password is never handed to the consent policy.
+
+### Dependencies and Assumptions
+
+- **Prerequisites**: STORY-006-001 complete (the `PasswordDispatcher` autofill path, `WebViewComponent` password API, and the shared fill script exist). No dependency on 006-002 / 006-003; being Java-contract-only, this story is cross-platform by construction and needs no native change.
+- **Data assumptions**: Same credential model. The fill-consent event exposes `{source, origin, username}` — never the password.
+- **Integration points**: purely internal — the existing `PasswordDispatcher.doFill(origin)` path and the `WebViewComponent` API surface. No native or JS change.
+- **Business constraints**:
+  - The consent policy is consulted **only** on the automatic autofill path (page-load fill). The programmatic API (`getCredential` / `getCredentials` / `getAllCredentials` / `saveCredential` / `deleteCredential`) is host-initiated trusted code and is **not** gated by this handler.
+  - The handler runs on the Swing EDT (so it may show UI or block on a modal re-auth), consistent with `WebViewSavePasswordHandler`.
+  - Backward compatibility is a **hard requirement**: the default handler must return FILL, so every STORY-006-001/002/003 autofill AC continues to pass unchanged.
+  - The consent policy must never receive the password; only origin + username are exposed to it.
+
+### Scope In
+
+- New public enum `ca.weblite.webview.FillPasswordDisposition { FILL, DONT_FILL }`.
+- New public POJO `ca.weblite.webview.WebViewFillPasswordEvent`, immutable — `WebViewComponent source()`, `String origin()`, `String username()`. It carries **no password** (no accessor, no field exposed via `toString()`); `toString()` shows origin + username only.
+- New public interface `ca.weblite.webview.WebViewFillPasswordHandler` with a single method invoked on the EDT:
+  - `FillPasswordDisposition onAutofillRequested(WebViewFillPasswordEvent event)`.
+  - `WebViewFillPasswordHandler DEFAULT` — returns `FILL` unconditionally (preserves today's automatic autofill).
+  - `WebViewFillPasswordHandler CONFIRM` — a ready-made opt-in policy that shows a Swing confirmation ("Use the saved password for `<origin>`?", showing the username, never the password) modal to the host window; OK → `FILL`, Cancel/close → `DONT_FILL`. Hosts install this (or their own, e.g. one that performs a biometric check) to require confirmation.
+- New public methods on `WebViewComponent`:
+  - `WebViewComponent setFillPasswordHandler(WebViewFillPasswordHandler handler)` — replace the fill policy; `null` reinstalls `WebViewFillPasswordHandler.DEFAULT`.
+  - `WebViewFillPasswordHandler getFillPasswordHandler()` — never null.
+- Autofill dispatch change: on the page-load fill path, after the origin-matched credential is found, the dispatcher consults the fill handler on the EDT with `{source, origin, username}`; it injects the credential only if the disposition is `FILL`, and does nothing (no injection, no error) on `DONT_FILL`. A handler exception is caught and forwarded to the default EDT uncaught-exception handling; nothing is filled and the WebView stays responsive.
+
+### Scope Out
+
+- Shipping an actual biometric / OS-credential implementation (Touch ID, Windows Hello, `LAContext`, `CredUIPromptForWindowsCredentials`). The story supplies the decision seam and a Swing-confirm default; a concrete biometric check is the host's to implement inside a custom handler (or a later story).
+- Gating the **programmatic** read API (`getCredential`/`getCredentials`/`getAllCredentials`) — those are trusted host calls, not automatic fills.
+- Per-field or per-credential fill selection UI (choosing among multiple usernames at fill time). Autofill continues to use the store's origin-`find` (most-recently-saved) result; richer selection is out of scope.
+- Any change to the save-side policy, the shared JS, or the native layer.
+
+### Acceptance Criteria
+
+#### AC1: Default behaviour still autofills automatically (no regression)
+**Given** a `WebViewComponent` with the manager enabled, a stored credential `{https://example.com, alice, s3cret}`, and no fill-handler installed,
+**When** the component loads `https://example.com/login` with empty username + password fields,
+**Then** after load the username field reads `alice` and the password field reads `s3cret`, with no confirmation shown — identical to STORY-006-001 AC4.
+
+#### AC2: CONFIRM handler shows a confirmation before filling
+**Given** a `WebViewComponent` with a stored credential `{https://example.com, alice, s3cret}` and `setFillPasswordHandler(WebViewFillPasswordHandler.CONFIRM)`,
+**When** the component loads `https://example.com/login`,
+**Then** a Swing confirmation appears modal to the host window asking to use the saved password for `https://example.com`, showing username `alice` and **not** showing the password.
+
+#### AC3: Approving the confirmation fills the fields
+**Given** the setup of AC2 with the confirmation showing,
+**When** the user approves it,
+**Then** the username field reads `alice` and the password field reads `s3cret`.
+
+#### AC4: Declining the confirmation fills nothing
+**Given** the setup of AC2 with the confirmation showing,
+**When** the user cancels / closes it,
+**Then** neither field is filled, no exception is raised, and the page is left as loaded.
+
+#### AC5: A custom handler decides programmatically without UI
+**Given** a `WebViewComponent` with a stored credential for `https://example.com` and `setFillPasswordHandler(e -> FillPasswordDisposition.DONT_FILL)`,
+**When** the component loads `https://example.com/login`,
+**Then** no prompt appears and neither field is filled.
+
+#### AC6: The fill event never exposes the password
+**Given** a `WebViewComponent` with a stored credential `{https://example.com, alice, s3cret}` and a custom fill-handler that records the event it receives,
+**When** autofill is requested on load,
+**Then** the recorded `WebViewFillPasswordEvent` exposes origin `https://example.com` and username `alice`, offers no accessor returning the password, and its `toString()` does not contain `s3cret`.
+
+#### AC7: The fill handler runs on the EDT
+**Given** a `WebViewComponent` with a fill-handler recording `SwingUtilities.isEventDispatchThread()`,
+**When** autofill is requested on load,
+**Then** the recorded value is `true`.
+
+#### AC8: getFillPasswordHandler never returns null; setter null restores default
+**Given** a freshly constructed `WebViewComponent`,
+**When** the host calls `getFillPasswordHandler()`, then installs a custom handler, then calls `setFillPasswordHandler(null)` and `getFillPasswordHandler()` again,
+**Then** the first call returns the non-null `DEFAULT`, and after the null reset the getter returns the `DEFAULT` handler again.
+
+#### AC9: The programmatic read API is not gated by the fill handler
+**Given** a `WebViewComponent` with a stored credential `{https://example.com, alice, s3cret}` and `setFillPasswordHandler(e -> FillPasswordDisposition.DONT_FILL)`,
+**When** the host calls `getCredential("https://example.com")`,
+**Then** it returns `alice`/`s3cret` — the DONT_FILL policy suppresses automatic autofill but does not block trusted host reads.
+
+#### AC10: Disabling the manager suppresses fill regardless of handler
+**Given** a `WebViewComponent` with `setPasswordManagerEnabled(false)`, a stored credential for `https://example.com`, and `setFillPasswordHandler(WebViewFillPasswordHandler.CONFIRM)`,
+**When** the component loads `https://example.com/login`,
+**Then** no confirmation appears and neither field is filled (the disabled manager short-circuits before the handler is consulted).
+
+#### AC11: A fill-handler exception does not crash the WebView
+**Given** a `WebViewComponent` with a fill-handler whose `onAutofillRequested` throws a `RuntimeException`,
+**When** autofill is requested on load,
+**Then** the exception surfaces via standard EDT uncaught-exception handling, nothing is filled, and the WebView stays responsive.
+
+### Non-Functional Expectations
+
+- The default configuration must not change any observable autofill behaviour shipped by STORY-006-001/002/003 — the fill handler is additive and defaults to FILL.
+- The consent policy must be given only origin + username; the password must not be reachable from `WebViewFillPasswordEvent`.
+- The handler is invoked on the EDT and may block on a modal confirmation or re-auth; the native engine thread must not be parked waiting on it (the fill path is already non-blocking off the native thread).
+
+---
+
+## [STORY-006-005] Enumerate-All Credentials for a Management UI
+
+### Background
+
+STORY-006-001 designed every credential **read** around a known origin: `WebViewCredentialStore.find(origin)` and `findAll(origin)`, surfaced as `getCredential(origin)` / `getCredentials(origin)` on `WebViewComponent`. That is exactly what autofill needs, but it makes one thing impossible: a host cannot ask *"which origins / credentials do I have saved?"* without already knowing every origin. Every mainstream browser exposes a password-management surface (Chrome's `chrome://password-manager`, Edge's `edge://settings/passwords`, Safari's Passwords pane) that lists **all** saved logins across **all** sites. A host embedding `WebViewComponent` cannot build that over the library's native OS store today, because there is no enumerate-all operation.
+
+STORY-006-001 explicitly deferred this: its Scope-Out list includes *"A credential-management UI (a 'manage saved passwords' list/editor window). Hosts build their own on top of the programmatic API; the library ships only the save prompt."* The programmatic API it shipped, however, is insufficient to build one — it can add, edit (`saveCredential`), and delete (`deleteCredential`) for a known origin, but it cannot enumerate. This story supplies the missing primitive so that Scope-Out reversal is actually achievable: an all-origins enumeration, exposed on both the store seam and the component.
+
+The native backends already contain the enumeration primitive; the Java contract simply never surfaced it. macOS's Keychain lookup already runs a two-phase `SecItemCopyMatching` and can pass `kSecMatchLimitAll` over the library's service namespace; Windows' `webview_cred_store_find` already calls `CredEnumerateW` with a namespace filter; Linux libsecret supports schema-wide search (`secret_password_search` / `secret_service_search`). This story lifts that capability into the public contract and implements the all-origins variant on each platform.
+
+Key points:
+- Business value: lets a host build a browser-grade "manage saved passwords" screen (list every saved login, then edit/delete via the existing API) over the library's native OS store.
+- Relationship with other features: extends the `WebViewCredentialStore` seam and `WebViewComponent` API from 006-001; reuses each platform's existing enumeration primitive from 006-001 (macOS), 006-002 (Linux), 006-003 (Windows).
+- Why now: with save/fill shipped, "manage what's saved" is the natural next capability, and it is the one primitive missing to make the 006-001 management-UI Scope-Out reversible.
+
+### Business Value
+
+- Provide an **enumerate-all** operation so a host can list every saved credential across every origin — the data a Chrome-style password-manager UI needs.
+- **Complete the management surface**: combined with the existing `saveCredential` (add/edit) and `deleteCredential` (remove), enumerate-all lets a host implement full list/edit/delete over the native OS store.
+- Preserve **cross-platform parity**: the enumerate-all semantics (ordering, dedup, degradation when no store is available) match across macOS, Linux, and Windows.
+- Keep the **security posture** unchanged: enumeration returns credentials to trusted host Java only; page JavaScript still has no path to read any stored credential, and passwords are still never logged.
+
+### Dependencies and Assumptions
+
+- **Prerequisites**: STORY-006-001 (Java contract + macOS store) for the macOS enumerate body and the Java surface; STORY-006-002 (Linux libsecret) and STORY-006-003 (Windows Credential Manager) for the Linux and Windows enumerate bodies respectively. The Java contract change is independent; each native body lands on its platform's canvas.
+- **Data assumptions**: Same credential model; the only persisted state remains the OS-native secret store entries under the library namespace. Enumerate-all reads exactly those entries.
+- **Integration points**: `WebViewCredentialStore` + `WebViewComponent`; macOS Keychain (`SecItemCopyMatching` with `kSecMatchLimitAll` over the library service namespace); Windows Credential Manager (`CredEnumerateW` over the namespace prefix); Linux libsecret (`secret_password_search` / `secret_service_search` over the `SecretSchema`). `InMemoryCredentialStore` enumerates its in-memory map.
+- **Business constraints**:
+  - Enumerate-all returns **every** credential under the library namespace across **all** origins, most-recently-saved first (same recency contract as origin-scoped `findAll`).
+  - It returns full `WebViewCredential` objects (origin + username + password) to the calling host Java, exactly as origin-scoped `find`/`findAll` already do — no new exposure surface; page JS still cannot reach it.
+  - When the backing store is unavailable (no Secret Service on Linux, etc.), enumerate-all degrades to an empty list, never throwing — consistent with the existing store contract.
+  - Passwords are still never logged or printed by the enumerate path.
+
+### Scope In
+
+- Extend `ca.weblite.webview.WebViewCredentialStore` with `java.util.List<WebViewCredential> findAll()` (no argument) — every credential across all origins under the library namespace, most-recently-saved first, as an unmodifiable list (empty when none / store unavailable).
+- New public method on `WebViewComponent`: `java.util.List<WebViewCredential> getAllCredentials()` — delegates to the active store's no-argument `findAll()`.
+- `InMemoryCredentialStore`: implement `findAll()` by enumerating its map, honouring the most-recently-saved-first ordering.
+- `NativeCredentialStore`: implement `findAll()` via a new process-global JNI primitive that enumerates all namespaced entries; provide the three platform bodies:
+  - macOS (Canvas 26): `SecItemCopyMatching` with `kSecMatchLimitAll` filtered to the library service namespace, two-phase (attributes then per-item secret) exactly as the origin-scoped find already does.
+  - Linux (Canvas 27): libsecret schema-wide search over the `SecretSchema` (library-namespace attribute), returning every match.
+  - Windows (Canvas 28): `CredEnumerateW` over the namespace target-prefix (the origin-scoped find already enumerates with a per-origin filter; this uses the namespace-wide filter).
+- Ordering + dedup semantics identical to origin-scoped `findAll` (most-recently-saved first; at most one credential per `{origin, username}`).
+
+### Scope Out
+
+- A shipped management-UI window. This story supplies the enumerate primitive; the actual list/editor UI remains the host's to build (still out of scope per 006-001).
+- A `savedOrigins()`-only variant returning just origins without credentials — `getAllCredentials()` returns full credentials, from which a host derives the origin list; a separate origins-only method is not added.
+- Cross-origin search, fuzzy matching, or paging of results — enumerate-all returns the full set in one call.
+- Any change to autofill, the save/fill handlers, or the shared JS.
+
+### Acceptance Criteria
+
+#### AC1: Enumerate-all returns credentials across multiple origins
+**Given** a `WebViewComponent` whose store holds `{https://a.example, alice, pw1}`, `{https://b.example, bob, pw2}`, and `{https://c.example, carol, pw3}`,
+**When** the host calls `getAllCredentials()`,
+**Then** the returned list contains all three credentials (each origin + username + password), regardless of origin.
+
+#### AC2: Enumerate-all is most-recently-saved first
+**Given** a `WebViewComponent` where the host saves `{https://a.example, alice, pw1}` then `{https://b.example, bob, pw2}` then `{https://c.example, carol, pw3}` in that order,
+**When** the host calls `getAllCredentials()`,
+**Then** the list is ordered most-recently-saved first (`carol`, then `bob`, then `alice`).
+
+#### AC3: Multiple usernames on one origin are all enumerated
+**Given** a `WebViewComponent` whose store holds `{https://svc.example, bob, pw1}` and `{https://svc.example, carol, pw2}`,
+**When** the host calls `getAllCredentials()`,
+**Then** both credentials for `https://svc.example` appear in the result.
+
+#### AC4: Empty store enumerates to an empty list
+**Given** a `WebViewComponent` with an empty store,
+**When** the host calls `getAllCredentials()`,
+**Then** it returns an empty list (not null) and raises no exception.
+
+#### AC5: Deletion is reflected in enumerate-all
+**Given** a `WebViewComponent` whose store holds `{https://a.example, alice, pw1}` and `{https://b.example, bob, pw2}`,
+**When** the host calls `deleteCredential("https://a.example", "alice")` and then `getAllCredentials()`,
+**Then** the result contains only `{https://b.example, bob, pw2}`.
+
+#### AC6: In-memory store enumerates for tests
+**Given** a `WebViewComponent` with `setCredentialStore(inMemoryStore)` where two credentials for different origins have been saved,
+**When** the host calls `getAllCredentials()`,
+**Then** it returns both credentials from `inMemoryStore`, and nothing is read from the OS-native store.
+
+#### AC7: Native round-trip — save two origins then enumerate (per platform)
+**Given** a `WebViewComponent` on macOS / Linux / Windows (each in turn) with the default `NativeCredentialStore` and a working OS secret store,
+**When** the host saves `{https://svc1.example, u1, p1}` and `{https://svc2.example, u2, p2}` and then calls `getAllCredentials()`,
+**Then** both credentials are returned from the OS-native store with their correct usernames and passwords.
+
+#### AC8: Enumerate-all degrades gracefully when the store is unavailable
+**Given** a `WebViewComponent` on a system whose OS secret store is unavailable (e.g. no Secret Service on Linux),
+**When** the host calls `getAllCredentials()`,
+**Then** it returns an empty list without throwing.
+
+#### AC9: Enumerate-all does not expose credentials to page JavaScript
+**Given** a `WebViewComponent` with stored credentials and a loaded page,
+**When** page JavaScript attempts to reach a stored credential (there is no injected global or channel that returns one),
+**Then** the page cannot obtain any credential; enumerate-all is reachable only from host Java via `getAllCredentials()`.
+
+#### AC10: Password never appears in library output during enumeration
+**Given** a `WebViewComponent` with stored credentials,
+**When** the host calls `getAllCredentials()` and inspects the returned objects' `toString()` and the library's stdout/stderr,
+**Then** no literal password appears (POJO `toString()` redacts it; the enumerate path logs no password).
+
+### Non-Functional Expectations
+
+- Enumerate-all's ordering, dedup, and graceful-degradation semantics must be identical across macOS, Linux, and Windows and consistent with the existing origin-scoped `findAll`.
+- The enumerate path performs OS secret-store I/O off the engine UI thread where the platform requires it, matching the existing store-I/O discipline.
+- The library writes no plaintext credential file and prints no password during enumeration.
+- Page JavaScript gains no new capability — enumerate-all is host-Java-only; the injected fill script remains write-only and origin-scoped.
+
+---
+
 ## Quality Checks
 
 **STORY-006-001 (Java API + shared JS + macOS Keychain)**:
@@ -535,6 +769,24 @@ Key points:
 - ✅ Two core functional points (WebView2 script injection + capture, Credential-Manager store).
 - ✅ 2-3 days of work.
 
+**STORY-006-004 (Autofill-consent handler)**:
+- ✅ All required sections present.
+- ✅ ACs use Given-When-Then with concrete inputs (`alice`/`s3cret`, `https://example.com`) and observable outcomes (fields filled or not, confirmation shown or not, EDT recorded `true`, password absent from event).
+- ✅ Business-language ACs; the public contract (`WebViewFillPasswordHandler`, `FillPasswordDisposition`, `setFillPasswordHandler`) is the user-visible surface. No native names in ACs (there are none — Java-contract-only).
+- ✅ Explicitly reverses the 006-001 Scope-Out item "Biometric / re-authentication gating before autofill" by supplying the decision seam (AC1 guarantees the default is a no-regression auto-fill).
+- ✅ Covers backward-compat default (AC1), opt-in confirm (AC2-4), programmatic decision (AC5), password-free event (AC6), EDT (AC7), null-restore (AC8), ungated read API (AC9), disabled-manager short-circuit (AC10), exception isolation (AC11).
+- ✅ One core functional point (a fill-side policy symmetric to the save-side one).
+- ✅ 1-2 days of work.
+
+**STORY-006-005 (Enumerate-all credentials)**:
+- ✅ All required sections present.
+- ✅ ACs use Given-When-Then with concrete multi-origin fixtures and observable outcomes (ordering, dedup, deletion reflected, empty→empty, graceful degradation, password absent from output).
+- ✅ Business-language ACs; the public contract (`getAllCredentials`, `WebViewCredentialStore.findAll()`) is the surface; native enumerate APIs appear only in Background / Dependencies / Scope-In.
+- ✅ Explicitly reverses the 006-001 Scope-Out item "A credential-management UI … Hosts build their own on top of the programmatic API" by supplying the one missing primitive (all-origins enumeration).
+- ✅ Covers multi-origin enumerate (AC1), recency ordering (AC2), multi-username (AC3), empty (AC4), deletion (AC5), in-memory (AC6), native per-platform round-trip (AC7), graceful degradation (AC8), no page-JS exposure (AC9), password never logged (AC10).
+- ✅ Two core functional points (the Java enumerate-all seam, the per-platform native enumerate bodies).
+- ✅ 2-3 days of work.
+
 ## Final INVEST Re-validation
 
 | Property | STORY-006-001 | STORY-006-002 | STORY-006-003 |
@@ -546,4 +798,13 @@ Key points:
 | Right-sized | ✅ (4-5 days) | ✅ (3-4 days) | ✅ (2-3 days) |
 | Testable | ✅ (in-memory store + programmatic handler drive save/fill headlessly; Swing harness shows default UX) | ✅ (both-mode ACs + parity AC + graceful-degradation AC) | ✅ (in-memory store + programmatic handler; Edge-bar-suppression AC) |
 
-All three stories pass INVEST.
+| Property | STORY-006-004 | STORY-006-005 |
+|---|---|---|
+| Independent | ✅ (Java-contract-only; depends only on the 006-001 fill path; no native change) | ✅ (Java seam is independent; each native enumerate body builds on that platform's shipped store) |
+| Complete | ✅ (policy interface + Swing default/confirm + component seam + gated dispatch) | ✅ (enumerate-all on the store + component + all three native bodies + in-memory) |
+| Valuable | ✅ (browser-grade confirm/re-auth before fill; unblocks re-auth-required hosts) | ✅ (supplies the one primitive a Chrome-style manage-passwords UI needs) |
+| Estimable | ✅ (one enum + one POJO + one interface with two default impls + two component methods + one dispatch tweak) | ✅ (one no-arg store method + one component method + one JNI primitive with three platform bodies + in-memory impl) |
+| Right-sized | ✅ (1-2 days) | ✅ (2-3 days) |
+| Testable | ✅ (default-fill no-regression AC + programmatic DONT_FILL + EDT + password-free event, all headless) | ✅ (in-memory enumerate + per-platform native round-trip + ordering/dedup/degradation ACs) |
+
+All five stories pass INVEST.

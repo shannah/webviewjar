@@ -44,6 +44,18 @@ public interface WebViewCredentialStore {
     List<WebViewCredential> findAll(String origin);
 
     /**
+     * Enumerate every credential this store holds, across all origins,
+     * most-recently-saved first, as an unmodifiable list (empty when none
+     * or when the backing store is unavailable).
+     *
+     * <p>This is the primitive a host needs to build a "manage saved
+     * passwords" UI over the store. Like the origin-scoped reads it
+     * returns full credentials (origin + username + password) to the
+     * calling host code only; it is never reachable from page JavaScript.
+     */
+    List<WebViewCredential> findAll();
+
+    /**
      * Remove the credential for {@code {origin, username}}.
      *
      * @return whether a credential was actually removed.

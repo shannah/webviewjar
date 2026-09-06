@@ -17,6 +17,7 @@ import ca.weblite.webview.WebViewCredential;
 import ca.weblite.webview.WebViewCredentialStore;
 import ca.weblite.webview.WebViewDialogHandler;
 import ca.weblite.webview.WebViewDownloadHandler;
+import ca.weblite.webview.WebViewFillPasswordHandler;
 import ca.weblite.webview.WebViewPopupHandler;
 import ca.weblite.webview.WebViewMouseDispatcher;
 import ca.weblite.webview.WebViewMouseListener;
@@ -919,6 +920,28 @@ public abstract class WebViewComponent extends JComponent {
     }
 
     /**
+     * Replace the autofill-consent policy.  Passing {@code null} reinstalls
+     * the default {@link WebViewFillPasswordHandler#DEFAULT} (autofill
+     * unconditionally).  Install {@link WebViewFillPasswordHandler#CONFIRM}
+     * for a browser-style "use saved password?" confirmation, or a custom
+     * handler that performs an OS biometric / re-authentication check
+     * before autofill.  The handler is consulted only on the automatic
+     * page-load autofill path; the programmatic read methods are never
+     * gated by it.
+     *
+     * @return {@code this} for chaining
+     */
+    public final WebViewComponent setFillPasswordHandler(WebViewFillPasswordHandler handler) {
+        passwordDispatcher.setFillHandler(handler);
+        return this;
+    }
+
+    /** @return the active autofill-consent policy; never {@code null}. */
+    public final WebViewFillPasswordHandler getFillPasswordHandler() {
+        return passwordDispatcher.getFillHandler();
+    }
+
+    /**
      * Programmatically store a credential (bypasses the save prompt).
      * Overwrites any existing password for the same {@code {origin,
      * username}}.
@@ -941,6 +964,15 @@ public abstract class WebViewComponent extends JComponent {
      */
     public final List<WebViewCredential> getCredentials(String origin) {
         return passwordDispatcher.getCredentials(origin);
+    }
+
+    /**
+     * @return every credential stored across all origins,
+     *         most-recently-saved first (empty when none). The primitive
+     *         a host uses to build a "manage saved passwords" UI.
+     */
+    public final List<WebViewCredential> getAllCredentials() {
+        return passwordDispatcher.getAllCredentials();
     }
 
     /**

@@ -242,4 +242,126 @@ public class PasswordDispatcherTest {
         assertFalse(e.toString().contains("s3cret"));
         assertTrue(e.toString().contains("***"));
     }
+
+    // ---- STORY-006-004: autofill-consent handler ---------------------
+
+    @Test public void defaultFillHandlerFillsWithoutPrompt() throws Exception {
+        // No fill handler installed => DEFAULT => FILL (no regression).
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        dispatcher.dispatchFillRequested("https://example.com/login");
+        String js = source.evalCalls.poll(3, TimeUnit.SECONDS);
+        assertNotNull("default fill handler must autofill", js);
+        assertTrue(js.contains("__webview_pw_fill__"));
+    }
+
+    @Test public void dontFillHandlerSuppressesAutofill() throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        dispatcher.setFillHandler(new WebViewFillPasswordHandler() {
+            @Override public FillPasswordDisposition onAutofillRequested(
+                    WebViewFillPasswordEvent e) {
+                return FillPasswordDisposition.DONT_FILL;
+            }
+        });
+        dispatcher.dispatchFillRequested("https://example.com/login");
+        String js = source.evalCalls.poll(500, TimeUnit.MILLISECONDS);
+        assertNull("DONT_FILL must suppress autofill", js);
+    }
+
+    @Test public void fillEventCarriesIdentityNotPasswordAndRunsOnEdt()
+            throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        final AtomicReference<WebViewFillPasswordEvent> seen =
+            new AtomicReference<WebViewFillPasswordEvent>();
+        final AtomicBoolean onEdt = new AtomicBoolean(false);
+        dispatcher.setFillHandler(new WebViewFillPasswordHandler() {
+            @Override public FillPasswordDisposition onAutofillRequested(
+                    WebViewFillPasswordEvent e) {
+                onEdt.set(SwingUtilities.isEventDispatchThread());
+                seen.set(e);
+                return FillPasswordDisposition.FILL;
+            }
+        });
+        dispatcher.dispatchFillRequested("https://example.com/login");
+        assertNotNull(source.evalCalls.poll(3, TimeUnit.SECONDS));
+        WebViewFillPasswordEvent e = seen.get();
+        assertNotNull(e);
+        assertEquals("https://example.com", e.origin());
+        assertEquals("alice", e.username());
+        // The event exposes no password: its toString cannot leak one.
+        assertFalse(e.toString().contains("s3cret"));
+        assertTrue("fill handler must run on the EDT", onEdt.get());
+    }
+
+    @Test public void fillHandlerExceptionIsolated() throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        dispatcher.setFillHandler(new WebViewFillPasswordHandler() {
+            @Override public FillPasswordDisposition onAutofillRequested(
+                    WebViewFillPasswordEvent e) {
+                throw new RuntimeException("boom");
+            }
+        });
+        dispatcher.dispatchFillRequested("https://example.com/login");
+        String js = source.evalCalls.poll(500, TimeUnit.MILLISECONDS);
+        assertNull("a throwing fill handler must fill nothing", js);
+        assertTrue(awaitTrue(new java.util.concurrent.Callable<Boolean>() {
+            public Boolean call() { return uncaught.get() != null; }
+        }));
+    }
+
+    @Test public void nullFillHandlerRestoresDefault() {
+        assertNotNull(dispatcher.getFillHandler());
+        dispatcher.setFillHandler(new WebViewFillPasswordHandler() {
+            @Override public FillPasswordDisposition onAutofillRequested(
+                    WebViewFillPasswordEvent e) {
+                return FillPasswordDisposition.DONT_FILL;
+            }
+        });
+        dispatcher.setFillHandler(null);
+        assertSame(WebViewFillPasswordHandler.DEFAULT, dispatcher.getFillHandler());
+    }
+
+    @Test public void dontFillDoesNotGateProgrammaticRead() {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        dispatcher.setFillHandler(new WebViewFillPasswordHandler() {
+            @Override public FillPasswordDisposition onAutofillRequested(
+                    WebViewFillPasswordEvent e) {
+                return FillPasswordDisposition.DONT_FILL;
+            }
+        });
+        assertEquals("alice",
+            dispatcher.getCredential("https://example.com").get().username());
+    }
+
+    @Test public void disabledSuppressesFillBeforeHandler() throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        final AtomicBoolean handlerCalled = new AtomicBoolean(false);
+        dispatcher.setFillHandler(new WebViewFillPasswordHandler() {
+            @Override public FillPasswordDisposition onAutofillRequested(
+                    WebViewFillPasswordEvent e) {
+                handlerCalled.set(true);
+                return FillPasswordDisposition.FILL;
+            }
+        });
+        dispatcher.setEnabled(false);
+        dispatcher.dispatchFillRequested("https://example.com/login");
+        flushEdt();
+        Thread.sleep(50);
+        assertTrue(source.evalCalls.isEmpty());
+        assertFalse("disabled manager must not consult the fill handler",
+            handlerCalled.get());
+    }
+
+    // ---- STORY-006-005: enumerate-all via the dispatcher --------------
+
+    @Test public void getAllCredentialsEnumeratesAcrossOrigins() {
+        store.save(new WebViewCredential("https://a.example", "alice", "pw1"));
+        store.save(new WebViewCredential("https://b.example", "bob", "pw2"));
+        store.save(new WebViewCredential("https://c.example", "carol", "pw3"));
+        java.util.List<WebViewCredential> all = dispatcher.getAllCredentials();
+        assertEquals(3, all.size());
+        // Most-recently-saved first.
+        assertEquals("carol", all.get(0).username());
+        assertEquals("bob", all.get(1).username());
+        assertEquals("alice", all.get(2).username());
+    }
 }

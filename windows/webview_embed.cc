@@ -3456,6 +3456,63 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
     return out;
 }
 
+JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1find_1all
+  (JNIEnv *env, jclass, jstring jservice) {
+    jclass strCls = env->FindClass("java/lang/String");
+    const char *service = env->GetStringUTFChars(jservice, nullptr);
+    std::string svc = service ? service : "";
+    std::string prefix = svc + ":";
+    std::wstring filterW = embed_win::utf8_to_wide((svc + ":*").c_str());
+
+    // Enumerate-all: same CredEnumerateW over the namespace prefix as find,
+    // but with no origin filter — every entry is kept and its origin emitted.
+    std::vector<std::string> quads;
+    DWORD count = 0;
+    PCREDENTIALW *creds = nullptr;
+    if (CredEnumerateW(filterW.c_str(), 0, &count, &creds) && creds) {
+        for (DWORD i = 0; i < count; i++) {
+            PCREDENTIALW c = creds[i];
+            if (!c || !c->TargetName) continue;
+            std::string name = embed_win::wide_to_utf8(c->TargetName);
+            if (name.rfind(prefix, 0) != 0) continue;
+            std::string rest = name.substr(prefix.size());
+            size_t bar = rest.find('|');
+            if (bar == std::string::npos) continue;
+            std::string origin_dec, user_dec;
+            if (!embed_win::pw_b64url_decode(rest.substr(0, bar), origin_dec)) continue;
+            if (!embed_win::pw_b64url_decode(rest.substr(bar + 1), user_dec)) continue;
+            std::string blob;
+            if (c->CredentialBlob && c->CredentialBlobSize > 0) {
+                blob.assign((const char *)c->CredentialBlob,
+                            (size_t)c->CredentialBlobSize);
+            }
+            std::string millisStr = "0", password;
+            size_t nl = blob.find('\n');
+            if (nl != std::string::npos) {
+                millisStr = blob.substr(0, nl);
+                password = blob.substr(nl + 1);
+            } else {
+                password = blob;
+            }
+            quads.push_back(origin_dec);
+            quads.push_back(user_dec);
+            quads.push_back(millisStr);
+            quads.push_back(password);
+        }
+        CredFree(creds);
+    }
+    if (service) env->ReleaseStringUTFChars(jservice, service);
+
+    jobjectArray out =
+        env->NewObjectArray((jsize)quads.size(), strCls, nullptr);
+    for (size_t i = 0; i < quads.size(); i++) {
+        jstring js = env->NewStringUTF(quads[i].c_str());
+        env->SetObjectArrayElement(out, (jsize)i, js);
+        env->DeleteLocalRef(js);
+    }
+    return out;
+}
+
 JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1delete
   (JNIEnv *env, jclass, jstring jservice, jstring jorigin, jstring juser) {
     const char *service = env->GetStringUTFChars(jservice, nullptr);

@@ -31,12 +31,14 @@ generated_at: 2026-08-13T15:45:00-07:00
      `webview_embed_set_password_callback` (heavyweight) and
      `webview_offscreen_set_password_callback` (offscreen) — replacing the
      canvas-23 Linux stubs, following `gtk_set_dialog_callback`.
-  2. **libsecret credential store:** replace the canvas-23 non-Apple stub
-     bodies of the four `webview_cred_store_*` primitives with a libsecret
-     implementation, matching the macOS Keychain semantics exactly (same
-     `service` namespace, same `savedAtMillis + "\n" + password` value
-     encoding, same origin/username keying, same most-recent-first
-     ordering contract — Java re-sorts regardless).
+  2. **libsecret credential store:** replace the canvas-26 non-Apple stub
+     bodies of the five `webview_cred_store_*` primitives — including
+     `webview_cred_store_find_all` (the no-argument enumerate-all across
+     every origin, STORY-006-005) — with a libsecret implementation,
+     matching the macOS Keychain semantics exactly (same `service`
+     namespace, same `savedAtMillis + "\n" + password` value encoding,
+     same origin/username keying, same most-recent-first ordering
+     contract — Java re-sorts regardless).
 - **libsecret is loaded at runtime via `dlopen`**, matching the existing
   WebKitGTK runtime-load convention (`webkit_loader.cpp`) rather than
   hard-linking. If `libsecret-1.so.0` is absent, or no Secret Service
@@ -71,6 +73,10 @@ generated_at: 2026-08-13T15:45:00-07:00
   - All 13 STORY-006-002 ACs pass on Linux (a Secret Service provider
     available for AC1–AC11/AC13; AC12 verified by disabling/removing the
     provider).
+  - STORY-006-005 AC7/AC8 on Linux: `getAllCredentials()` round-trips
+    every stored credential across origins via the libsecret
+    schema-wide search, and degrades to an empty list when no Secret
+    Service is available.
   - `WebViewPasswordDemo` (from canvas 26) works unchanged on Linux in
     both modes.
   - README's "Password manager" subsection updates the coverage note:
@@ -111,8 +117,10 @@ generated_at: 2026-08-13T15:45:00-07:00
   - `fire_password_submitted` / `fire_password_fill_requested` — the
     JNI fire helpers (shared with macOS in shape; may be defined
     platform-neutrally once and reused).
-  - libsecret bodies for `webview_cred_store_save/find/delete/available`
-    (replacing the canvas-23 non-Apple stubs).
+  - libsecret bodies for
+    `webview_cred_store_save/find/find_all/delete/available`
+    (replacing the canvas-26 non-Apple stubs), where `find_all` is the
+    no-argument enumerate-all across every origin (STORY-006-005).
   - JNI bridges for `webview_embed_set_password_callback` (→
     `gtk_set_password_callback` on the heavyweight engine) and
     `webview_offscreen_set_password_callback` (→ the offscreen engine).
@@ -174,6 +182,13 @@ No new classes; no mermaid diagram change (the class model is canvas 26's).
      attribute, split the secret on the first `\n` into millis + password,
      emit flat `[username, millis, password]` triples. Java re-sorts.
      On no match → empty array.
+   - **find_all** (STORY-006-005): the enumerate-all variant of `find`,
+     bound on `{service}` only (both `origin` and `username` unbound), so
+     the search returns every item under the library namespace across all
+     origins. For each item read its `origin` + `username` attributes and
+     its secret; split the secret into millis + password; emit flat
+     **quads** `[origin, username, millis, password]`. Java re-sorts. On
+     no match / unavailable → empty array.
    - **delete**: `secret_password_clear_sync(&WEBVIEW_PW_SCHEMA, NULL,
      &error, "service", service, "origin", origin, "username", username,
      NULL)` → returns whether a secret was removed.
@@ -259,6 +274,21 @@ File: `src_c/webview_embed.cpp` (Linux-guarded)
    Return the array (empty on no match / error). Java sorts + builds
    credentials.
 
+### 4a. Implement webview_cred_store_find_all (STORY-006-005)
+1. `if (!ensure_secret()) return empty jobjectArray;`
+2. Enumerate items matching `{service}` only (both `origin` and
+   `username` unbound) using the resolved search API
+   (`secret_service_search_sync` / `secret_password_searchv_sync` with
+   only the `service` attribute bound, requesting attributes + secrets);
+   for each item: read the `origin` and `username` attributes and the
+   secret string; split the secret on the first `\n` → `millis`,
+   `password`; append `origin`, `username`, `millis`, `password` to a
+   `std::vector<std::string>`.
+3. Build a `jobjectArray` (`java/lang/String`) of the flat **quads**;
+   free all libsecret allocations (secret + attribute list frees). Return
+   the array (empty on no match / error). Java sorts + builds
+   credentials. Never log the password.
+
 ### 5. Implement webview_cred_store_delete
 1. `if (!ensure_secret()) return JNI_FALSE;`
 2. `gboolean removed = secret_password_clear_sync(&WEBVIEW_PW_SCHEMA, NULL, &err, "service", service, "origin", origin, "username", username, NULL);`
@@ -336,10 +366,10 @@ File: `src_c/webview_embed.cpp` (Linux)
 
 ## S · Safeguards
 
-- **Graceful degradation (STORY-006-002 AC12).** No libsecret / no Secret
-  Service ⇒ `available()` false, `save`/`delete` false, `find` empty; page
-  load and form submission continue to work; no crash, no thrown JNI
-  exception.
+- **Graceful degradation (STORY-006-002 AC12 / STORY-006-005 AC8).** No
+  libsecret / no Secret Service ⇒ `available()` false, `save`/`delete`
+  false, `find` and `find_all` empty; page load and form submission
+  continue to work; no crash, no thrown JNI exception.
 - **Trusted origin** stamped from `webkit_web_view_get_uri`; JS-supplied
   origin ignored — the anti-cross-origin invariant holds on Linux too.
 - **Password never logged / filed.** libsecret is the only persistence;

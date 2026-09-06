@@ -87,6 +87,25 @@ public final class InMemoryCredentialStore implements WebViewCredentialStore {
     }
 
     @Override
+    public List<WebViewCredential> findAll() {
+        List<OriginRec> all = new ArrayList<OriginRec>();
+        for (java.util.Map.Entry<String, List<Rec>> e : byOrigin.entrySet()) {
+            String origin = e.getKey();
+            List<Rec> list = e.getValue();
+            synchronized (list) {
+                for (Rec r : list) all.add(new OriginRec(origin, r));
+            }
+        }
+        Collections.sort(all, ORIGIN_REC_ORDER);
+        List<WebViewCredential> out = new ArrayList<WebViewCredential>(all.size());
+        for (OriginRec or : all) {
+            out.add(new WebViewCredential(or.origin, or.rec.username,
+                or.rec.password));
+        }
+        return Collections.unmodifiableList(out);
+    }
+
+    @Override
     public boolean delete(String origin, String username) {
         String o = Origins.canonical(origin);
         if (o == null || username == null) return false;
@@ -123,4 +142,29 @@ public final class InMemoryCredentialStore implements WebViewCredentialStore {
             this.password = password;
         }
     }
+
+    /** Pairs a {@link Rec} with its origin for the cross-origin
+     *  {@link #findAll()} enumeration. */
+    private static final class OriginRec {
+        final String origin;
+        final Rec rec;
+        OriginRec(String origin, Rec rec) {
+            this.origin = origin;
+            this.rec = rec;
+        }
+    }
+
+    /** Most-recently-saved first across all origins; ties broken by origin
+     *  then username ascending. */
+    private static final Comparator<OriginRec> ORIGIN_REC_ORDER =
+        new Comparator<OriginRec>() {
+            @Override public int compare(OriginRec a, OriginRec b) {
+                if (a.rec.savedAtMillis != b.rec.savedAtMillis) {
+                    return a.rec.savedAtMillis > b.rec.savedAtMillis ? -1 : 1;
+                }
+                int byOrigin = a.origin.compareTo(b.origin);
+                if (byOrigin != 0) return byOrigin;
+                return a.rec.username.compareTo(b.rec.username);
+            }
+        };
 }

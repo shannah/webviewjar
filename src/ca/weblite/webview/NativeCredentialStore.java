@@ -92,6 +92,31 @@ public final class NativeCredentialStore implements WebViewCredentialStore {
     }
 
     @Override
+    public List<WebViewCredential> findAll() {
+        String[] flat;
+        try {
+            flat = WebViewNative.webview_cred_store_find_all(SERVICE);
+        } catch (Throwable t) {
+            return Collections.emptyList();
+        }
+        if (flat == null || flat.length < 4) return Collections.emptyList();
+        List<Row> rows = new ArrayList<Row>(flat.length / 4);
+        for (int i = 0; i + 3 < flat.length; i += 4) {
+            String origin = flat[i];
+            String username = flat[i + 1];
+            long millis = parseMillis(flat[i + 2]);
+            String password = flat[i + 3];
+            if (origin == null || username == null || password == null) continue;
+            rows.add(new Row(new WebViewCredential(origin, username, password),
+                millis));
+        }
+        Collections.sort(rows, ROW_ORDER);
+        List<WebViewCredential> out = new ArrayList<WebViewCredential>(rows.size());
+        for (Row r : rows) out.add(r.credential);
+        return Collections.unmodifiableList(out);
+    }
+
+    @Override
     public boolean delete(String origin, String username) {
         String o = Origins.canonical(origin);
         if (o == null || username == null) return false;
@@ -111,13 +136,17 @@ public final class NativeCredentialStore implements WebViewCredentialStore {
         }
     }
 
-    /** Most-recently-saved first; ties broken by username ascending for
-     *  deterministic ordering. */
+    /** Most-recently-saved first; ties broken by origin then username
+     *  ascending for deterministic ordering (the origin tie-break is a
+     *  no-op for the origin-scoped {@code findAll(origin)} where every row
+     *  shares one origin, and orders the cross-origin {@code findAll()}). */
     private static final Comparator<Row> ROW_ORDER = new Comparator<Row>() {
         @Override public int compare(Row a, Row b) {
             if (a.savedAtMillis != b.savedAtMillis) {
                 return a.savedAtMillis > b.savedAtMillis ? -1 : 1;
             }
+            int byOrigin = a.credential.origin().compareTo(b.credential.origin());
+            if (byOrigin != 0) return byOrigin;
             return a.credential.username().compareTo(b.credential.username());
         }
     };

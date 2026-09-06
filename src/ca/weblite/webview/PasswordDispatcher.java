@@ -21,11 +21,12 @@ import javax.swing.SwingUtilities;
  * Drive the password manager via
  * {@link WebViewComponent#setPasswordManagerEnabled},
  * {@link WebViewComponent#setCredentialStore},
- * {@link WebViewComponent#setSavePasswordHandler}, and the
- * {@code getCredential}/{@code saveCredential}/{@code deleteCredential}
- * methods.  This class is {@code public} only because the consuming
- * Swing subclasses live in a different package — the same reason
- * {@link DialogDispatcher} is public.
+ * {@link WebViewComponent#setSavePasswordHandler},
+ * {@link WebViewComponent#setFillPasswordHandler}, and the
+ * {@code getCredential}/{@code getAllCredentials}/{@code saveCredential}/
+ * {@code deleteCredential} methods.  This class is {@code public} only
+ * because the consuming Swing subclasses live in a different package —
+ * the same reason {@link DialogDispatcher} is public.
  *
  * <p>Per-component hub for the password manager.  Holds the active
  * {@link WebViewCredentialStore}, the {@link WebViewSavePasswordHandler},
@@ -102,6 +103,8 @@ public final class PasswordDispatcher {
     private volatile WebViewCredentialStore store = new NativeCredentialStore();
     private volatile WebViewSavePasswordHandler handler =
         WebViewSavePasswordHandler.DEFAULT;
+    private volatile WebViewFillPasswordHandler fillHandler =
+        WebViewFillPasswordHandler.DEFAULT;
     private volatile boolean enabled = true;
     private volatile boolean disposed = false;
     private final ExecutorService io = Executors.newSingleThreadExecutor(
@@ -141,6 +144,15 @@ public final class PasswordDispatcher {
     /** @return the active save-policy; never {@code null}. */
     public WebViewSavePasswordHandler getHandler() { return handler; }
 
+    /** Replace the autofill-consent policy; {@code null} restores
+     *  {@link WebViewFillPasswordHandler#DEFAULT}. */
+    public void setFillHandler(WebViewFillPasswordHandler h) {
+        fillHandler = (h == null) ? WebViewFillPasswordHandler.DEFAULT : h;
+    }
+
+    /** @return the active autofill-consent policy; never {@code null}. */
+    public WebViewFillPasswordHandler getFillHandler() { return fillHandler; }
+
     // ---- programmatic API (synchronous on the caller thread) -----------
 
     public void saveCredential(WebViewCredential c) {
@@ -154,6 +166,10 @@ public final class PasswordDispatcher {
 
     public List<WebViewCredential> getCredentials(String origin) {
         return store.findAll(origin);
+    }
+
+    public List<WebViewCredential> getAllCredentials() {
+        return store.findAll();
     }
 
     public boolean deleteCredential(String origin, String username) {
@@ -232,7 +248,27 @@ public final class PasswordDispatcher {
             return;
         }
         if (c == null || !c.isPresent()) return;
-        WebViewCredential cred = c.get();
+        final WebViewCredential cred = c.get();
+        // Marshal the consent decision (and the fire-and-forget eval) to
+        // the EDT.  The keychain read above already ran off the EDT; only
+        // the host-controlled fill policy and the eval run here.
+        SwingUtilities.invokeLater(new Runnable() {
+            @Override public void run() { fillOnEdt(origin, cred); }
+        });
+    }
+
+    private void fillOnEdt(String origin, WebViewCredential cred) {
+        if (disposed || !enabled) return;
+        FillPasswordDisposition d;
+        try {
+            WebViewFillPasswordEvent ev =
+                new WebViewFillPasswordEvent(source, origin, cred.username());
+            d = fillHandler.onAutofillRequested(ev);
+        } catch (Throwable t) {
+            forward(t); // handler threw: fill nothing, stay responsive
+            return;
+        }
+        if (d != FillPasswordDisposition.FILL) return; // DONT_FILL: skip
         String js = "window.__webview_pw_fill__('"
             + base64UrlEncode(cred.username()) + "','"
             + base64UrlEncode(cred.password()) + "')";

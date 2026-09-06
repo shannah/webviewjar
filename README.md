@@ -483,7 +483,11 @@ wv.setPasswordManagerEnabled(false);
 // Programmatic access (works regardless of the enabled flag):
 wv.saveCredential(new WebViewCredential("https://example.com", "alice", "s3cret"));
 Optional<WebViewCredential> c = wv.getCredential("https://example.com");
+List<WebViewCredential> everything = wv.getAllCredentials(); // all origins
 wv.deleteCredential("https://example.com", "alice");
+
+// Require a confirmation (or an OS biometric check) before autofill:
+wv.setFillPasswordHandler(WebViewFillPasswordHandler.CONFIRM);
 ```
 
 Key points:
@@ -508,6 +512,25 @@ Key points:
   "Save password?" policy (return a disposition programmatically for
   headless use).  Passing `null` to either restores the default.  Both
   getters never return `null`.
+* **Autofill consent.**  By default a stored credential is filled
+  silently on page load.  `setFillPasswordHandler(WebViewFillPasswordHandler)`
+  gates that: install `WebViewFillPasswordHandler.CONFIRM` for a
+  browser-style "Use the saved password for `<origin>`?" prompt, or your
+  own handler that performs an OS biometric / re-authentication check
+  (Touch ID, Windows Hello) and returns `DONT_FILL` to decline.  The
+  event handed to the handler carries only the origin and username —
+  never the password.  Passing `null` restores the silent-autofill
+  default; the getter never returns `null`.  The consent handler gates
+  the automatic page-load autofill only — the programmatic
+  `getCredential` / `getCredentials` / `getAllCredentials` reads are
+  trusted host calls and are never gated.
+* **Managing saved passwords.**  `getAllCredentials()` enumerates every
+  stored credential across all origins (most-recently-saved first) — the
+  primitive you need to build a Chrome-style "manage saved passwords"
+  screen on top of the OS-native store, combined with `saveCredential`
+  (add/edit) and `deleteCredential` (remove).  Like the origin-scoped
+  reads it returns credentials to host code only; page JavaScript has no
+  path to any stored credential.
 * **Security note.**  Once a credential is auto-filled it lives in the
   page DOM and is readable by any script running on that page — exactly
   the same exposure as a browser's autofill.  The library only ever fills
