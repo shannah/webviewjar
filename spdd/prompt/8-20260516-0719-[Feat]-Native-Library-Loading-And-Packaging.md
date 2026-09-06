@@ -82,6 +82,21 @@ generated_at: 2026-05-16T07:19:13-07:00
   manually before the WebView dylib avoids a SIGSEGV at PC=0 on
   the first JAWT call. The comment at
   `WebViewNative.java:25` records the diagnosis.
+- **The native libraries therefore do not LINK JAWT.** This is the
+  direct consequence of the preload above, and it was never written
+  down. JAWT symbols are left **undefined at link time** and resolve
+  at load time against the `libjawt` the loader has already brought
+  in — on macOS via `-Wl,-undefined,dynamic_lookup`, on Linux by
+  simply not passing `-ljawt` (the symbols come from the already
+  loaded JVM). Linking `-ljawt` contradicts the design twice over:
+  the loader already tolerates JDKs that **do not ship `libjawt` as
+  a standalone loadable library** (Safeguards), so a link-time
+  dependency on it makes the build require a file the canvas
+  explicitly says may not exist — which is exactly how
+  `build-mac.sh` came to fail with `ld: library 'jawt' not found`
+  on a stock JDK. Both CI workflows already build this way, and CI
+  produces the shipped artifact, so the developer scripts were the
+  outlier rather than CI.
 - **Per-architecture directory inside the jar.** The Maven
   resource configuration explicitly packages native
   subdirectories (`linux_64/**`, `linux_arm64/**`, `osx_64/**`,
@@ -142,6 +157,10 @@ generated_at: 2026-05-16T07:19:13-07:00
   the host OS/arch and drop it under `natives/<arch>/`. A local
   `mvn package` after one of these produces a jar containing only
   that host's native lib (sufficient for local smoke testing).
+  They must match the CI recipe for their platform in **linkage**
+  and in **which translation units they compile** (Operation 8);
+  a script that diverges produces a library the shipped one is not,
+  which defeats the point of a local smoke test.
 - `.github/workflows/build.yml` and
   `.github/workflows/maven-release.yml` — the canonical six-way
   build pipeline. A `native` matrix job per platform produces and
@@ -399,6 +418,49 @@ Files: `src_c/webkit_loader.h`, `src_c/webkit_loader.cpp`,
    per-version build, alongside the existing Windows WebView2-Runtime
    note.
 
+### 8. Developer Build Scripts Match the CI Recipe
+Files: `build-mac.sh`, `build-linux.sh`
+
+1. Responsibility: produce, for the host platform only, a native
+   library whose **linkage and translation units are identical to
+   what the CI matrix produces for that same platform** — so a local
+   `mvn package` smoke test exercises the library that actually
+   ships, not a differently-linked lookalike.
+
+2. **No `-ljawt`, anywhere.** Remove the JAWT link flag from both
+   scripts. It contradicts the two-phase preload (Approach) and
+   depends on a file the Safeguards say may not exist.
+   - `build-mac.sh` links with `-Wl,-undefined,dynamic_lookup`,
+     leaving the `JAWT_*` symbols to resolve at load time.
+   - `build-linux.sh` passes no JAWT flag at all; the symbols come
+     from the already-loaded JVM. Its `-lX11 -ldl` and the
+     GTK-only `pkg-config --libs` from Operation 7.4 are unchanged.
+
+3. **Translation units per platform, matching CI.**
+   - macOS compiles **only** `src_c/webview_embed.cpp`. It does not
+     compile `src_c/webview.c` (which is C built as C++ and only
+     emits a deprecation warning there).
+   - Linux compiles `src_c/webview.c`, `src_c/webview_embed.cpp`
+     and `src_c/webkit_loader.cpp`, as Operation 7.4 already
+     requires.
+
+4. **Host architecture, not a hardcoded one.** The Entities section
+   already says these scripts drop the library under
+   `natives/<arch>/` for the **host** OS/arch, but `build-mac.sh`
+   hardcodes `natives/osx_64`. On an Apple Silicon Mac that writes an
+   arm64 dylib into the x86_64 directory, and the local jar then
+   cannot load it — the failure surfaces far from its cause, as a
+   missing native library at runtime. `build-mac.sh` must read
+   `uname -m` and select `osx_arm64` for `arm64`/`aarch64` and
+   `osx_64` for `x86_64`.
+
+5. **Known remaining gap, deliberately not closed here:**
+   `build-linux.sh` still hardcodes `natives/linux_64` and
+   `build-windows.sh` still hardcodes `natives/windows_64`, so both
+   mis-place the library on an arm64 host. Only the JAWT flag is
+   corrected in `build-linux.sh`; `build-windows.sh` is untouched
+   (it links no JAWT and delegates to `windows/script/build.bat`).
+
 ## N · Norms
 - The developer `build-*.sh` scripts must quote every shell
   expansion that carries a filesystem path — `"${JAVA_HOME}"`
@@ -453,6 +515,18 @@ Files: `src_c/webkit_loader.h`, `src_c/webkit_loader.cpp`,
   `WebViewNative.java:31`. Do not change this to rethrow:
   some JDKs do not ship `libjawt` as a standalone loadable
   library.
+- **Never link JAWT (never-relax).** Because the line above tolerates
+  a JDK with no standalone `libjawt`, no build entry point — CI job,
+  developer `build-*.sh`, or `run-*` demo script — may pass `-ljawt`
+  or otherwise create a link-time dependency on it. JAWT resolves at
+  load time only. A build that links it fails on exactly the JDKs the
+  loader was written to survive.
+- **CI is the source of truth for linkage (never-relax).** A
+  developer `build-*.sh` must produce a library whose linkage matches
+  what the CI matrix produces for the same platform. Where the two
+  diverge, the script is wrong, not CI — CI builds the artifact that
+  ships, so a local smoke test against a differently-linked library
+  proves nothing about the release.
 - The extractor cleans up leftover libraries older than 5
   minutes (`BaseJniExtractor.java:66`), bounded by the
   `org.scijava.nativelib.leftoverMinAgeMs` system property.
