@@ -2918,6 +2918,63 @@ static Engine *adopt_retained_popup(JNIEnv *env, HWND parent, RetainedPopup *rp,
     return e;
 }
 
+// Standard base64url (no padding) over raw bytes -- used to build a
+// delimiter-safe Credential Manager TargetName in the password store
+// (Canvas 28).
+static std::string pw_b64url_encode(const std::string &in) {
+    static const char *T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        unsigned n = ((unsigned char)in[i] << 16)
+                   | ((unsigned char)in[i + 1] << 8)
+                   | ((unsigned char)in[i + 2]);
+        out.push_back(T[(n >> 18) & 63]);
+        out.push_back(T[(n >> 12) & 63]);
+        out.push_back(T[(n >> 6) & 63]);
+        out.push_back(T[n & 63]);
+    }
+    size_t rem = in.size() - i;
+    if (rem == 1) {
+        unsigned n = ((unsigned char)in[i] << 16);
+        out.push_back(T[(n >> 18) & 63]);
+        out.push_back(T[(n >> 12) & 63]);
+    } else if (rem == 2) {
+        unsigned n = ((unsigned char)in[i] << 16)
+                   | ((unsigned char)in[i + 1] << 8);
+        out.push_back(T[(n >> 18) & 63]);
+        out.push_back(T[(n >> 12) & 63]);
+        out.push_back(T[(n >> 6) & 63]);
+    }
+    return out;
+}
+
+static bool pw_b64url_decode(const std::string &in, std::string &out) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '-') return 62;
+        if (c == '_') return 63;
+        return -1;
+    };
+    out.clear();
+    int buf = 0, bits = 0;
+    for (char c : in) {
+        int v = val(c);
+        if (v < 0) return false;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((char)((buf >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
 } // namespace embed_win
 
 // ---------------------------------------------------------------------------
@@ -3305,62 +3362,8 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_
 // (origin and username are base64url-encoded so the '|' delimiter and any
 // URL characters are unambiguous), and whose CredentialBlob is UTF-8
 // "<savedAtMillis>\n<password>".  b64url keeps TargetName a valid,
-// delimiter-safe wide string.
-
-// Standard base64url (no padding) over raw bytes.
-static std::string pw_b64url_encode(const std::string &in) {
-    static const char *T =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    std::string out;
-    out.reserve(((in.size() + 2) / 3) * 4);
-    size_t i = 0;
-    for (; i + 2 < in.size(); i += 3) {
-        unsigned n = ((unsigned char)in[i] << 16)
-                   | ((unsigned char)in[i + 1] << 8)
-                   | ((unsigned char)in[i + 2]);
-        out.push_back(T[(n >> 18) & 63]);
-        out.push_back(T[(n >> 12) & 63]);
-        out.push_back(T[(n >> 6) & 63]);
-        out.push_back(T[n & 63]);
-    }
-    size_t rem = in.size() - i;
-    if (rem == 1) {
-        unsigned n = ((unsigned char)in[i] << 16);
-        out.push_back(T[(n >> 18) & 63]);
-        out.push_back(T[(n >> 12) & 63]);
-    } else if (rem == 2) {
-        unsigned n = ((unsigned char)in[i] << 16)
-                   | ((unsigned char)in[i + 1] << 8);
-        out.push_back(T[(n >> 18) & 63]);
-        out.push_back(T[(n >> 12) & 63]);
-        out.push_back(T[(n >> 6) & 63]);
-    }
-    return out;
-}
-
-static bool pw_b64url_decode(const std::string &in, std::string &out) {
-    auto val = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '-') return 62;
-        if (c == '_') return 63;
-        return -1;
-    };
-    out.clear();
-    int buf = 0, bits = 0;
-    for (char c : in) {
-        int v = val(c);
-        if (v < 0) return false;
-        buf = (buf << 6) | v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back((char)((buf >> bits) & 0xFF));
-        }
-    }
-    return true;
-}
+// delimiter-safe wide string.  The base64url helpers live in namespace
+// embed_win (above); reference them qualified from this extern "C" block.
 
 JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1save
   (JNIEnv *env, jclass, jstring jservice, jstring jorigin, jstring juser,
@@ -3370,12 +3373,12 @@ JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1
     const char *user = env->GetStringUTFChars(juser, nullptr);
     const char *pass = env->GetStringUTFChars(jpass, nullptr);
     std::string target = std::string(service ? service : "") + ":"
-        + pw_b64url_encode(origin ? origin : "") + "|"
-        + pw_b64url_encode(user ? user : "");
+        + embed_win::pw_b64url_encode(origin ? origin : "") + "|"
+        + embed_win::pw_b64url_encode(user ? user : "");
     std::string blob = std::to_string((long long)millis) + "\n"
         + (pass ? pass : "");
-    std::wstring targetW = utf8_to_wide(target.c_str());
-    std::wstring userW = utf8_to_wide(user ? user : "");
+    std::wstring targetW = embed_win::utf8_to_wide(target.c_str());
+    std::wstring userW = embed_win::utf8_to_wide(user ? user : "");
 
     CREDENTIALW cred = {};
     cred.Type = CRED_TYPE_GENERIC;
@@ -3403,7 +3406,7 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
     std::string svc = service ? service : "";
     std::string targetOrigin = origin ? origin : "";
     std::string prefix = svc + ":";
-    std::wstring filterW = utf8_to_wide((svc + ":*").c_str());
+    std::wstring filterW = embed_win::utf8_to_wide((svc + ":*").c_str());
 
     std::vector<std::string> triples;
     DWORD count = 0;
@@ -3412,14 +3415,14 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
         for (DWORD i = 0; i < count; i++) {
             PCREDENTIALW c = creds[i];
             if (!c || !c->TargetName) continue;
-            std::string name = wide_to_utf8(c->TargetName);
+            std::string name = embed_win::wide_to_utf8(c->TargetName);
             if (name.rfind(prefix, 0) != 0) continue;
             std::string rest = name.substr(prefix.size());
             size_t bar = rest.find('|');
             if (bar == std::string::npos) continue;
             std::string origin_dec, user_dec;
-            if (!pw_b64url_decode(rest.substr(0, bar), origin_dec)) continue;
-            if (!pw_b64url_decode(rest.substr(bar + 1), user_dec)) continue;
+            if (!embed_win::pw_b64url_decode(rest.substr(0, bar), origin_dec)) continue;
+            if (!embed_win::pw_b64url_decode(rest.substr(bar + 1), user_dec)) continue;
             if (origin_dec != targetOrigin) continue;
             std::string blob;
             if (c->CredentialBlob && c->CredentialBlobSize > 0) {
@@ -3459,9 +3462,9 @@ JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1
     const char *origin = env->GetStringUTFChars(jorigin, nullptr);
     const char *user = env->GetStringUTFChars(juser, nullptr);
     std::string target = std::string(service ? service : "") + ":"
-        + pw_b64url_encode(origin ? origin : "") + "|"
-        + pw_b64url_encode(user ? user : "");
-    std::wstring targetW = utf8_to_wide(target.c_str());
+        + embed_win::pw_b64url_encode(origin ? origin : "") + "|"
+        + embed_win::pw_b64url_encode(user ? user : "");
+    std::wstring targetW = embed_win::utf8_to_wide(target.c_str());
     BOOL ok = CredDeleteW(targetW.c_str(), CRED_TYPE_GENERIC, 0);
     if (service) env->ReleaseStringUTFChars(jservice, service);
     if (origin) env->ReleaseStringUTFChars(jorigin, origin);
