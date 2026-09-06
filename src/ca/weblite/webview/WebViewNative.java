@@ -340,6 +340,18 @@ native static void webview_embed_set_download_callback(long w, WebViewDownloadCa
 // Passing 0 for w is a silent no-op.  Never throws via JNI.
 native static void webview_embed_set_user_agent(long w, String ua);
 
+// Install a per-destination User-Agent resolver on the embedded WebView.  The
+// resolver is invoked as java.util.function.Function#apply(Object)Object with
+// the URL a navigation is about to load, and returns the User-Agent to present
+// for it (null or empty => fall through to the static setUserAgent value).
+// Held as a JNI global reference until replaced or the engine is destroyed;
+// resolver == null clears it.  Only the engine-driven popup-child path upcalls
+// it -- navigations Java drives resolve on the Java side.  The upcall runs on
+// the engine UI thread, attaches that thread to the JVM when needed, and clears
+// any pending exception, so a throwing resolver falls through instead of
+// propagating.  Passing 0 for w is a silent no-op.  Never throws via JNI.
+native static void webview_embed_set_user_agent_resolver(long w, Object resolver);
+
 // Purge the embedded WebView's HTTP resource cache (disk + memory) so the
 // next navigation re-fetches from the network.  Clears the resource cache
 // ONLY: cookies, local storage, and service-worker registrations are left
@@ -495,6 +507,11 @@ native static void webview_offscreen_set_download_callback(long peer, WebViewDow
 // and this is a native-side no-op.  ua == null clears the override.  Never
 // throws via JNI.
 native static void webview_offscreen_set_user_agent(long peer, String ua);
+
+// Offscreen counterpart to webview_embed_set_user_agent_resolver.  Same
+// contract; Linux only, a native-side no-op where the offscreen engine is a
+// stub.
+native static void webview_offscreen_set_user_agent_resolver(long peer, Object resolver);
 
 // Offscreen counterpart to webview_embed_clear_cache.  Linux purges the
 // WebKitGTK context's HTTP resource cache; macOS / Windows offscreen engines

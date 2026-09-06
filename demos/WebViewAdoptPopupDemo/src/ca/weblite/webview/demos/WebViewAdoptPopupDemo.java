@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -51,6 +52,16 @@ import javax.swing.ToolTipManager;
  *       Native-window modes; with Reset UA it echoes the engine default.  This
  *       verifies the opener's override is applied to the popup child before its
  *       in-flight initial navigation.</li>
+ *   <li><b>Per-host resolver</b> (Canvas 21, 1.5.0) — tick
+ *       <b>Per-host resolver (httpbin)</b> to install a
+ *       {@link WebViewComponent#setUserAgentResolver(java.util.function.Function)}
+ *       that maps {@code httpbin.org} to a distinctive
+ *       {@code SwingWebView-Resolver} UA and declines (returns {@code null})
+ *       for every other host.  Now open {@code window.open &rarr; popup}: the
+ *       popup echoes the <em>resolver's</em> UA rather than the opener's,
+ *       proving a popup child's first request is keyed on the child's own
+ *       target URL instead of copied from the opener.  Untick it and the
+ *       opener-copy behaviour returns unchanged.</li>
  * </ul>
  *
  * <p>The POST/echo checks hit {@code https://httpbin.org/post}, so they need
@@ -59,6 +70,12 @@ import javax.swing.ToolTipManager;
 public final class WebViewAdoptPopupDemo {
 
     /** A current desktop Safari UA (prefilled into the UA field). */
+    /** A UA distinct from every preset, so the httpbin echo is unambiguous
+     *  about which layer chose it (Canvas 21, 1.5.0). */
+    private static final String RESOLVER_UA =
+            "Mozilla/5.0 (SwingWebView-Resolver) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
+
     private static final String SAFARI_UA =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       + "AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -142,6 +159,26 @@ public final class WebViewAdoptPopupDemo {
             opener.setUrl(openerPage());
         });
         bar.add(resetUa);
+
+        // Canvas 21 (1.5.0): per-destination resolver.  Maps httpbin.org to a
+        // distinctive UA while leaving every other host on the static field
+        // value above, so the window.open -> https://httpbin.org/user-agent
+        // popup echoes the RESOLVER's UA rather than the opener's -- the
+        // on-device proof that a popup child's first request is keyed on the
+        // child's own target URL, not copied from its opener.
+        JCheckBox resolverBox = new JCheckBox("Per-host resolver (httpbin)");
+        resolverBox.setToolTipText(
+                "Resolve httpbin.org to " + RESOLVER_UA + "; other hosts fall "
+                + "through to the User-Agent field.");
+        resolverBox.addActionListener(e -> {
+            opener.setUserAgentResolver(resolverBox.isSelected()
+                    ? url -> url != null && url.contains("httpbin.org")
+                            ? RESOLVER_UA : null
+                    : null);
+            opener.setUrl(openerPage());
+        });
+        bar.add(resolverBox);
+
         JButton clearCache = new JButton("Clear cache");
         clearCache.addActionListener(e -> {
             // Canvas 22: purge the HTTP resource cache, then reload so the

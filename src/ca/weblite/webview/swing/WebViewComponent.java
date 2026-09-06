@@ -20,6 +20,7 @@ import ca.weblite.webview.WebViewMouseListener;
 
 import java.io.PrintStream;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import javax.swing.JComponent;
 
 /**
@@ -241,6 +242,7 @@ public abstract class WebViewComponent extends JComponent {
      */
     public WebViewComponent setUserAgent(String ua) {
         pendingUserAgent = (ua == null || ua.isEmpty()) ? null : ua;
+        lastAppliedUserAgentValid = false;
         applyUserAgentToPeer(pendingUserAgent);
         return this;
     }
@@ -255,6 +257,108 @@ public abstract class WebViewComponent extends JComponent {
      *  No-op on the base class and when no peer is attached; subclasses
      *  forward to their engine wrapper's {@code setUserAgent}. */
     protected void applyUserAgentToPeer(String ua) {
+    }
+
+    /** Per-destination User-Agent resolver, or {@code null} when none is
+     *  set.  Survives the peer's create/destroy cycle alongside
+     *  {@link #pendingUserAgent}. */
+    protected Function<String, String> pendingUserAgentResolver = null;
+
+    /** The User-Agent last pushed to the peer, so an unchanged value is not
+     *  re-entered into the engine setter on every navigation. */
+    private String lastAppliedUserAgent = null;
+    private boolean lastAppliedUserAgentValid = false;
+
+    /**
+     * Install a <b>per-destination</b> User-Agent resolver: a function from
+     * the URL a navigation is about to load to the User-Agent to present for
+     * it.  This lets one embedded browser show a different UA per destination
+     * host — useful when two sites want opposite things (one rejects the
+     * engine's own UA as an unsupported browser, another penalises the
+     * mainstream UA the first one demands).
+     *
+     * <p><b>Precedence.</b>  The resolver's answer wins when it is non-null
+     * and non-blank; otherwise the static {@link #setUserAgent(String)} value
+     * applies; otherwise the engine default.  A {@code null} or blank return
+     * therefore means <em>fall through</em>, not "use the engine default" — a
+     * resolver can never force the engine default over a static override.
+     *
+     * <p><b>When it is consulted.</b>  At exactly three points, each a
+     * navigation that is about to start and that this library controls:
+     * before a view's initial navigation, before any Java-initiated
+     * {@link #setUrl(String)} on a live view, and before a browser-initiated
+     * pop-up child's first navigation (keyed on the pop-up's own target URL,
+     * so an OAuth sign-in opened from a UA-spoofing site can present a
+     * different UA than its opener).
+     *
+     * <p><b>Limitation.</b>  This is not per-request switching: a server-side
+     * redirect that crosses hosts <em>during</em> a navigation keeps the UA
+     * that navigation started with.
+     *
+     * <p><b>Threading.</b>  The resolver is invoked on the engine UI thread
+     * immediately before the navigation it governs, so it must be fast and
+     * must not block.  A resolver that throws is swallowed and treated as a
+     * {@code null} return — it can never break a navigation.
+     *
+     * @param resolver the resolver, or {@code null} to clear it
+     * @return {@code this} for chaining
+     */
+    public WebViewComponent setUserAgentResolver(Function<String, String> resolver) {
+        pendingUserAgentResolver = resolver;
+        lastAppliedUserAgentValid = false;
+        applyUserAgentResolverToPeer(resolver);
+        return this;
+    }
+
+    /** @return the per-destination User-Agent resolver, or {@code null}. */
+    public Function<String, String> getUserAgentResolver() {
+        return pendingUserAgentResolver;
+    }
+
+    /**
+     * Run the User-Agent precedence chain for a navigation to {@code url}:
+     * the resolver's answer when non-null and non-blank, else the static
+     * {@link #pendingUserAgent}, else {@code null} (engine default).  Never
+     * throws — a resolver that fails falls through to the static value.
+     */
+    protected String resolveUserAgentFor(String url) {
+        Function<String, String> r = pendingUserAgentResolver;
+        if (r != null && url != null && url.trim().length() > 0) {
+            try {
+                String ua = r.apply(url);
+                if (ua != null && ua.trim().length() > 0) {
+                    return ua;
+                }
+            } catch (Throwable ignored) {
+                // A resolver must never be able to break a navigation.
+            }
+        }
+        return pendingUserAgent;
+    }
+
+    /**
+     * Resolve and apply the User-Agent for an imminent navigation to
+     * {@code url}.  Applied only when it differs from the value last pushed
+     * to the peer, so an unchanged UA does not re-enter the engine setter on
+     * every navigation.  Called from the attach path (before the first
+     * navigate) and from each subclass's {@link #setUrl(String)}.
+     */
+    protected void applyResolvedUserAgentFor(String url) {
+        String ua = resolveUserAgentFor(url);
+        if (lastAppliedUserAgentValid
+                && (ua == null ? lastAppliedUserAgent == null : ua.equals(lastAppliedUserAgent))) {
+            return;
+        }
+        applyUserAgentToPeer(ua);
+        lastAppliedUserAgent = ua;
+        lastAppliedUserAgentValid = true;
+    }
+
+    /** Push the (possibly {@code null}) resolver down to the live native peer
+     *  so the engine-driven pop-up path can consult it.  No-op on the base
+     *  class and when no peer is attached; subclasses forward to their engine
+     *  wrapper's {@code setUserAgentResolver}. */
+    protected void applyUserAgentResolverToPeer(Function<String, String> resolver) {
     }
 
     /**

@@ -57,6 +57,68 @@ generated_at: 2026-08-06T14:00:00-07:00
   / macOS), Canvas 16/17 (native-window Linux/Windows), and Canvas
   18/19/20 (popup adoption macOS/Linux/Windows).
 
+- **Per-host User-Agent resolver (1.5.0).** Let a caller supply a
+  *resolver* — a function from the URL a navigation is about to load
+  to the User-Agent to present for it — so one embedded browser can
+  show a different UA per destination host. Expose
+  `WebViewComponent.setUserAgentResolver(Function<String,String>)` and
+  `getUserAgentResolver()`, plumbed through the same
+  pending-value-then-apply-at-attach path `setUserAgent` already uses.
+
+- **Why a resolver, not just a string.** A single static UA cannot
+  satisfy two sites with opposite demands. Slack rejects the engine's
+  own UA as an unsupported browser and needs a mainstream desktop
+  Chrome string; Google's sign-in, by contrast, scores a Chrome UA
+  presented by a WebKit engine as a spoof — the claimed Chrome build
+  has no `navigator.userAgentData`, sends no `Sec-CH-UA` client
+  hints, and carries a WebKit TLS fingerprint — and answers with a
+  CAPTCHA that cannot be passed at any score. Choosing the UA per
+  destination host is the only way to serve both from one browser.
+
+- **Resolver precedence.** Resolver result when non-null and
+  non-blank → the static `setUserAgent` value → the engine default
+  (`null`). A `null` or blank resolver return means **fall through**,
+  *not* "engine default": only the absence of both a resolver result
+  and a static override yields the engine default. When no resolver is
+  set, behaviour is byte-for-byte that of 1.4.0.
+
+- **Consulted at exactly three points**, each a navigation that is
+  about to start and that this library controls: (a) before a view's
+  **initial** navigation (peer attach / first `setUrl`); (b) before any
+  **Java-initiated `setUrl`** on an already-live view; (c) before a
+  browser-initiated **popup child's first** navigation, keyed on the
+  **popup's own target URL**.
+
+- **Supersedes popup inheritance when a resolver is set.** Point (c)
+  replaces the blanket copy of the opener's override described in the
+  Popup inheritance requirement above: the child's UA is chosen from
+  the child's target URL rather than inherited from the opener. The
+  popup is the case that needs this most — an OAuth sign-in opened
+  from a site that requires a spoofed UA lands on an identity provider
+  that penalises exactly that spoof. When **no** resolver is set, the
+  opener-copy behaviour is retained unchanged.
+
+- **Resolver threading and failure.** The resolver is invoked on the
+  engine UI thread immediately before the navigation it governs, so it
+  must be fast and must not block. A resolver that throws is swallowed
+  and treated as a `null` return (fall through to the static UA): a
+  resolver must never be able to break a navigation.
+
+- **Rejected alternative — true per-navigation interception.** The
+  resolver deliberately does **not** provide per-request or mid-page UA
+  switching: a server-side redirect that crosses hosts *during* a
+  navigation keeps the UA that navigation started with. Intercepting
+  every navigation via the macOS `WKNavigationDelegate`
+  `webView:decidePolicyForNavigationAction:decisionHandler:` — cancel
+  the action, set `customUserAgent`, re-issue the request — was
+  considered and **rejected**: WebKit does not reliably expose
+  `NSURLRequest.HTTPBody` to that delegate for form POSTs, so
+  re-issuing would silently drop OAuth form-post bodies. That is the
+  same class of breakage Canvas 18 D7 already avoids by never
+  re-`setUrl`-ing an adopted popup. Presenting a slightly stale UA
+  after a cross-host redirect is a far smaller defect than losing a
+  sign-in POST.
+
 - Definition of Done:
   - `wv.setUserAgent("…Safari…")` before display makes the first and
     subsequent navigations send that `User-Agent` header on all three
@@ -77,8 +139,23 @@ generated_at: 2026-08-06T14:00:00-07:00
     engine default yields a popup at the engine default. Verifiable in
     `WebViewAdoptPopupDemo`: the `window.open → popup` button opens
     `https://httpbin.org/user-agent`, which echoes the popup's UA.
+  - `setUserAgentResolver` chooses the UA per destination host at all
+    three consultation points; a headless
+    `WebViewComponentUserAgentResolverTest` verifies precedence
+    (resolver → static → default), fall-through on a `null`/blank
+    return, and that a throwing resolver falls through instead of
+    propagating.
+  - A popup opened toward a host the resolver maps to a distinct UA
+    sends **that** UA on its first request — not the opener's — on all
+    three engines, for both ADOPT and NATIVE_WINDOW. Verifiable in
+    `WebViewAdoptPopupDemo` via its resolver toggle plus the
+    `https://httpbin.org/user-agent` echo.
+  - README gains a "Per-host user agent" subsection covering the
+    resolver, its precedence, the three consultation points, and the
+    cross-host-redirect limitation.
 
-- Out of scope: per-request UA switching; UA-Client-Hints
+- Out of scope: per-request / mid-navigation UA switching (see the
+  rejected alternative above); UA-Client-Hints
   (`Sec-CH-UA`) customisation; spoofing `navigator.userAgent` from
   Java (that is a caller-side `addOnBeforeLoad` concern); the
   standalone in-process `WebView` class (embedded surface only, same
@@ -135,6 +212,37 @@ generated_at: 2026-08-06T14:00:00-07:00
   WebView2 worker thread and cannot distinguish an override from the
   default via `get_UserAgent` — can propagate the opener's override to
   the child.
+- **WebViewComponent** (modified, resolver). Also gains:
+  - `protected java.util.function.Function<String,String>
+    pendingUserAgentResolver = null;` (adjacent to `pendingUserAgent`).
+  - `public WebViewComponent setUserAgentResolver(
+    Function<String,String> resolver)` — store, push down to the peer
+    when attached. `null` clears it.
+  - `public Function<String,String> getUserAgentResolver()`.
+  - `protected String resolveUserAgentFor(String url)` — the shared
+    Java-side precedence helper (resolver → `pendingUserAgent` →
+    `null`), guarded so a throwing resolver falls through.
+  - `protected void applyUserAgentResolverToPeer(
+    Function<String,String> r) { }` (no-op default), overridden by the
+    two subclasses so the **native popup path** can reach the resolver.
+- **EmbeddedWebView / OffscreenWebView** (modified, resolver).
+  `setUserAgentResolver(Function<String,String>)` →
+  `WebViewNative.webview_embed_set_user_agent_resolver(peer, r)` /
+  `webview_offscreen_set_user_agent_resolver(peer, r)`.
+- **WebViewNative** (modified, resolver). `native static void
+  webview_embed_set_user_agent_resolver(long w, Object resolver);` and
+  the offscreen counterpart. The parameter is typed `Object` at the
+  JNI boundary and invoked reflectively as
+  `java.util.function.Function#apply`, so no new callback interface is
+  introduced.
+- **Native `Engine`** (modified, resolver — all three engines). Gains a
+  JNI **global reference** to the resolver object (cleared and
+  re-created on each set, deleted on engine destroy) plus a cached
+  `Function.apply` method id, and a `resolve_ua_for(Engine*, const
+  char* url)` helper that attaches the current thread to the JVM,
+  invokes the resolver, clears any pending exception, and returns a
+  freshly allocated UTF-8 string or `nullptr`.
+- **WebViewComponentUserAgentResolverTest** (new).
 - **WebViewComponentUserAgentTest** (new), **README.md** (modified).
 
 ```mermaid
@@ -215,6 +323,40 @@ OffscreenWebView ..> WebViewNative : JNI
      Nested popups reuse the opener engine, so they inherit the same
      override.
 
+6. **Resolve in Java where Java drives the navigation; upcall only
+   where the engine does.** Of the three consultation points, (a) the
+   initial navigation and (b) a Java-initiated `setUrl` are both
+   driven from Java, which already knows the target URL — so those
+   resolve **entirely in Java**: `resolveUserAgentFor(url)` runs the
+   precedence chain and the result is pushed through the existing
+   `setUserAgent` path *before* `navigate` is called. Only (c), the
+   popup child, is engine-driven: WebKit/WebView2 creates the child and
+   starts its request without asking Java, so that site alone needs a
+   native **upcall** into the resolver. This keeps the new native
+   surface to a single helper per engine and leaves the well-tested
+   Java UA path in charge of everything else.
+
+7. **Popup resolution replaces opener-copy only when it answers.** At
+   each popup-child creation site the child's target URL is already in
+   hand (macOS: the navigation action's `request.URL`; Linux: the
+   `WebKitNavigationAction`'s request URI; Windows: the
+   `NewWindowRequested` args' `Uri`). The site asks the opener
+   engine's resolver for that URL first; a non-empty answer is applied
+   to the child and the opener-copy is skipped, while a `null`/empty
+   answer — or no resolver at all — falls through to the existing
+   opener-copy behaviour unchanged. So 1.4.0 semantics survive exactly
+   for callers that never set a resolver.
+
+8. **Resolver lifetime across JNI.** The resolver is held as a JNI
+   global reference on the engine so it outlives the Java call that
+   set it; setting a new resolver deletes the previous global ref, and
+   engine destruction deletes it too. The upcall attaches the calling
+   engine thread to the JVM (the popup sites run on the engine UI
+   thread, which on Windows is the WebView2 worker thread and is not
+   otherwise attached), and always clears any pending exception before
+   returning, so a throwing resolver can never propagate into engine
+   code.
+
 ## S · Structure
 
 ### Inheritance Relationships
@@ -227,15 +369,24 @@ OffscreenWebView ..> WebViewNative : JNI
    (`EmbeddedWebView`/`OffscreenWebView`).
 2. Engine wrappers → `WebViewNative` natives → per-engine setter.
 3. `createPeer()` / `addNotify()` → apply pending UA before navigate.
-4. Popup-child creation site → opener's effective override (read from
-   the opener view on macOS/Linux, from the opener `Engine`'s tracked
-   value on Windows) → child view's UA, before the child's in-flight
-   initial navigation.
+4. Popup-child creation site → opener engine's **resolver** keyed on
+   the child's target URL, falling back to the opener's effective
+   override (read from the opener view on macOS/Linux, from the opener
+   `Engine`'s tracked value on Windows) → child view's UA, before the
+   child's in-flight initial navigation.
+5. `WebViewComponent.setUrl` / attach path →
+   `resolveUserAgentFor(url)` → `setUserAgent` → engine wrapper, before
+   `navigate`.
+6. `WebViewComponent.setUserAgentResolver` → engine wrapper →
+   `WebViewNative` resolver natives → engine-held global ref, used
+   only by the popup-child sites.
 
 ### Layered Architecture
 1. Native engine layer (`src_c/webview_embed.cpp`,
-   `windows/webview_embed.cc`): setters + JNI bridges.
-2. JNI surface (`WebViewNative`): two decls.
+   `windows/webview_embed.cc`): setters, the resolver holder +
+   `resolve_ua_for` upcall helper, and JNI bridges.
+2. JNI surface (`WebViewNative`): four decls (UA setter + resolver
+   setter, embed and offscreen).
 3. Engine wrapper layer (`EmbeddedWebView`/`OffscreenWebView`).
 4. Component API layer (`WebViewComponent`).
 5. Wiring layer (`createPeer`/`addNotify`).
@@ -359,6 +510,113 @@ NATIVE_WINDOW dispositions, on all three engines.
       Nested popups reuse the opener engine, so they inherit the same
       override.
 
+### 10. Resolver API on WebViewComponent
+File: `src/ca/weblite/webview/swing/WebViewComponent.java`
+1. Add `protected Function<String,String> pendingUserAgentResolver =
+   null;` beside `pendingUserAgent`.
+2. `public WebViewComponent setUserAgentResolver(
+   Function<String,String> r)`: store; if the peer is attached, call
+   `applyUserAgentResolverToPeer(r)`. Return `this`. `null` clears.
+3. `public Function<String,String> getUserAgentResolver()`.
+4. `protected String resolveUserAgentFor(String url)`: when a resolver
+   is set and `url` is non-blank, call it inside a `try`/`catch
+   (Throwable)`; a non-null, non-blank return wins. Otherwise return
+   `pendingUserAgent`. Never throws.
+5. `protected void applyUserAgentResolverToPeer(Function<String,String>
+   r) { }` — no-op default, overridden by both subclasses.
+
+### 11. Consult the resolver on Java-driven navigations
+1. `WebViewComponent.setUrl(String url)`: before handing the URL to
+   the peer, compute `String ua = resolveUserAgentFor(url)` and, when
+   it differs from the UA currently applied to the peer, apply it via
+   the existing live-apply path. Track the last-applied value so an
+   unchanged UA does not re-enter the engine setter on every
+   navigation.
+2. `WebViewHeavyweightComponent.createPeer()` and
+   `WebViewLightweightComponent.addNotify()`: replace the bare
+   `if (pendingUserAgent != null) …setUserAgent(pendingUserAgent)` with
+   `String ua = resolveUserAgentFor(pendingUrl); if (ua != null)
+   …setUserAgent(ua);`, still **before** the initial `navigate`, and
+   then push the resolver down via `…setUserAgentResolver(
+   pendingUserAgentResolver)` when one is set. With no resolver,
+   `resolveUserAgentFor` returns `pendingUserAgent` and the behaviour
+   is identical to 1.4.0.
+3. Both subclasses override `applyUserAgentResolverToPeer` against
+   their engine wrapper (`embedded` / `engine`), mirroring
+   `applyUserAgentToPeer`.
+
+### 12. Resolver plumbing to native
+1. `EmbeddedWebView.setUserAgentResolver(Function<String,String> r)`:
+   `checkAlive()`; retain `r` in the existing `heap` set (as
+   `setDownloadCallback` does) so it is not collected;
+   `WebViewNative.webview_embed_set_user_agent_resolver(peer, r)`.
+2. `OffscreenWebView.setUserAgentResolver(...)`: same against
+   `webview_offscreen_set_user_agent_resolver`.
+3. `WebViewNative`: add `native static void
+   webview_embed_set_user_agent_resolver(long w, Object resolver);` and
+   `native static void webview_offscreen_set_user_agent_resolver(
+   long peer, Object resolver);`. Block comment: the object is invoked
+   as `java.util.function.Function#apply(Object)Object`; `null` clears;
+   the upcall runs on the engine UI thread and never throws across JNI.
+
+### 13. Native resolver holder + popup-child resolution
+Files: `src_c/webview_embed.cpp` (macOS + Linux),
+`windows/webview_embed.cc` (Windows)
+1. Each `Engine` gains a `jobject ua_resolver` global ref (initialised
+   `nullptr`) and a cached `jmethodID` for `Function.apply`. The
+   resolver setter deletes any previous global ref, creates a new one
+   when the incoming object is non-null, and resolves the method id
+   once from `java/util/function/Function`. Engine destruction deletes
+   the ref.
+2. Add `static char *resolve_ua_for(Engine *e, const char *url)`:
+   returns `nullptr` when the engine, resolver or url is null.
+   Otherwise attach the current thread to the JVM (`GetEnv`, falling
+   back to `AttachCurrentThread`, detaching again only if this call
+   attached it), build a `jstring` from `url`, invoke
+   `CallObjectMethod`, `ExceptionCheck` → `ExceptionClear` → return
+   `nullptr`, then copy the returned UTF-8 into a freshly allocated
+   buffer (returning `nullptr` for a null or empty result). Callers own
+   and free the buffer.
+3. macOS `impl_create_web_view`: read the child's target URL from the
+   navigation action's `request.URL.absoluteString`, call
+   `resolve_ua_for(e, url)`, and when it yields a value call
+   `setCustomUserAgent:` on the child with it and **skip** the
+   opener-copy. When it yields `nullptr`, run the existing opener-copy
+   unchanged. Still before the `if (!adopt)` window setup, so both
+   dispositions are covered.
+4. Linux `handle_create_web_view`: take the child's target URI from the
+   `WebKitNavigationAction`'s request, call `resolve_ua_for`, and on a
+   value set it on the child's `WebKitSettings`, skipping the
+   opener-copy; otherwise fall through to the existing copy.
+5. Windows `NewWindowRequestedHandler`: read the target from the args'
+   `get_Uri`, call `resolve_ua_for` (the handler already runs on the
+   WebView2 worker thread, which the helper attaches), and on a value
+   `put_UserAgent` it on the child via `ICoreWebView2Settings2`,
+   skipping the tracked-override copy; otherwise fall through. Applies
+   to both the ADOPT and NATIVE_WINDOW branches, before
+   `deferral->Complete()`.
+6. JNI bridges for the two resolver setters in the existing
+   `extern "C"` block, dispatching per `#ifdef`.
+
+### 14. Resolver test, demo, README
+1. `test/ca/weblite/webview/WebViewComponentUserAgentResolverTest.java`
+   (StubComponent, no native peer): a resolver returning a UA for one
+   host and `null` for another proves per-host selection and
+   fall-through to the static UA; a blank return falls through; a
+   resolver that throws falls through instead of propagating;
+   `getUserAgentResolver()` round-trips and `null` clears;
+   `resolveUserAgentFor` returns `pendingUserAgent` when no resolver is
+   set and `null` when neither is set.
+2. `WebViewAdoptPopupDemo` gains a **Resolver** toggle that installs a
+   resolver mapping `httpbin.org` to a distinctive UA while leaving
+   other hosts at the static field's value, so opening the
+   `window.open → https://httpbin.org/user-agent` popup echoes the
+   resolver's UA rather than the opener's — the on-device proof for
+   point (c).
+3. README "Per-host user agent" subsection: the resolver API, the
+   precedence chain, the three consultation points, the
+   fall-through-on-null rule, and the cross-host-redirect limitation.
+
 ## N · Norms
 
 - **Mirror `pendingUrl`** lifecycle: store on the component, apply at
@@ -370,7 +628,19 @@ NATIVE_WINDOW dispositions, on all three engines.
   conversion released on every path.
 - **Java 8 target**; get-style accessors (`setUserAgent`/
   `getUserAgent`) matching `setUrl`/`getUrl`.
-- **No new dependency; no JS shim; no reserved binding.**
+- **No new dependency; no JS shim; no reserved binding.** The
+  resolver is a `java.util.function.Function`, already in Java 8 — no
+  new callback interface is introduced.
+- **Resolver falls through, never overrides downward.** A `null` or
+  blank resolver return means "I have no opinion" and yields to the
+  static UA; only the absence of both yields the engine default. A
+  resolver can never be used to *force* the engine default.
+- **A resolver never breaks a navigation.** Every call site wraps the
+  invocation and treats any throw as a `null` return, in Java and
+  across JNI alike.
+- **Resolve in Java wherever Java drives the navigation.** The native
+  upcall exists solely for the engine-driven popup child; no other
+  site may add one.
 - **Popup inheritance runs at the child-creation site, before the
   child's in-flight navigation**, covers both dispositions on all three
   engines, and never propagates an empty override: an opener at the
@@ -406,6 +676,24 @@ NATIVE_WINDOW dispositions, on all three engines.
   the sandbox): confirm the popup's first request carries the opener's
   UA via an echo endpoint (`WebViewAdoptPopupDemo` `window.open` →
   `https://httpbin.org/user-agent`), for both ADOPT and NATIVE_WINDOW.
+- **Resolver backward compatibility (never-relax):** with no resolver
+  set, every path — attach, `setUrl`, and both popup dispositions on
+  all three engines — behaves byte-for-byte as in 1.4.0, including the
+  opener-copy popup inheritance.
+- **Resolver precedence is fall-through:** resolver result (non-null,
+  non-blank) → static `setUserAgent` → engine default. Verified
+  headlessly; a blank or throwing resolver must not clear a static UA.
+- **Resolver upcall safety:** the JNI helper attaches the calling
+  thread when needed and detaches only if it attached, always clears a
+  pending exception before returning, and never lets a Java throwable
+  reach engine code. The resolver is held as a global ref so it
+  survives the setting call; the ref is deleted on replacement and on
+  engine destroy (no leak, no use-after-free).
+- **Cross-host redirect limitation (accepted, documented):** a
+  server-side redirect crossing hosts mid-navigation keeps the UA the
+  navigation started with. This is deliberate — see the rejected
+  per-navigation interception in Requirements — and must be stated in
+  the README rather than worked around.
 - **Native coverage status (mirrors Canvas 15/18):** the Java
   contract (Ops 1–5, 8) plus the macOS + Linux native setters (Op 6)
   and the Windows setter (Op 7) are this canvas's deliverable. The
@@ -424,6 +712,7 @@ NATIVE_WINDOW dispositions, on all three engines.
 - `src_c/webview_embed.cpp` (macOS + Linux)
 - `windows/webview_embed.cc` (Windows)
 - `test/ca/weblite/webview/WebViewComponentUserAgentTest.java`
+- `test/ca/weblite/webview/WebViewComponentUserAgentResolverTest.java`
 - `demos/WebViewAdoptPopupDemo/…` (UA field; shared with Canvas 18)
 - `run-mac-adopt-popup-demo.sh`
 - `README.md`

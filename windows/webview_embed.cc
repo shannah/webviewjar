@@ -209,6 +209,13 @@ struct Engine {
     // cannot distinguish an override from the default, so we cache it here.
     // Written / read on this engine's WebView2 worker thread only.
     std::wstring user_agent;
+
+    // Canvas 21 (1.5.0): per-destination User-Agent resolver
+    // (java.util.function.Function<String,String>) held as a JNI global ref.
+    // Consulted at the popup-child creation site with the CHILD's own target
+    // URL; a decline falls back to the tracked `user_agent` above.  Deleted on
+    // replacement and on engine destroy.
+    jobject ua_resolver = nullptr;
 };
 
 static void fire_focus_callback(Engine *e, bool became) {
@@ -1591,15 +1598,68 @@ private:
 // interface (mirrors the embed setter's tolerance).  Nested popups reuse the
 // opener engine, so they inherit the same override.  Covers BOTH the ADOPT and
 // NATIVE_WINDOW dispositions.
-static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child) {
-    if (!opener || !child || opener->user_agent.empty()) return;
+// Canvas 21 (1.5.0): ask the per-destination User-Agent resolver which UA to
+// present for a navigation to `url`.  Returns the empty string when there is no
+// resolver, no url, or the resolver declines (a null/empty return) or throws --
+// a resolver must never be able to break a navigation, so a pending exception
+// is cleared and treated as a decline.  Runs on the WebView2 worker thread,
+// which is not attached to the JVM, so it attaches and detaches symmetrically.
+static std::wstring resolve_ua_for_win(Engine *e, const char *url) {
+    std::wstring out;
+    if (!e || !e->ua_resolver || !e->jvm || !url || !*url) return out;
+    JavaVM *jvm = e->jvm;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm->AttachCurrentThread((void **)&env, nullptr) != JNI_OK || !env)
+            return out;
+        detach = true;
+    }
+    jstring ju = env->NewStringUTF(url);
+    jclass cls = env->GetObjectClass(e->ua_resolver);
+    if (cls && ju) {
+        jmethodID mid = env->GetMethodID(cls, "apply",
+            "(Ljava/lang/Object;)Ljava/lang/Object;");
+        if (mid) {
+            jobject r = env->CallObjectMethod(e->ua_resolver, mid, ju);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                r = nullptr;
+            }
+            if (r) {
+                const char *cs = env->GetStringUTFChars((jstring)r, nullptr);
+                if (cs && *cs) out = utf8_to_wide(cs);
+                if (cs) env->ReleaseStringUTFChars((jstring)r, cs);
+                env->DeleteLocalRef(r);
+            }
+        }
+    }
+    if (cls) env->DeleteLocalRef(cls);
+    if (ju) env->DeleteLocalRef(ju);
+    if (detach) jvm->DetachCurrentThread();
+    return out;
+}
+
+static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child,
+                                       const char *target_uri) {
+    if (!opener || !child) return;
+    // Canvas 21 (1.5.0): a resolver keyed on the CHILD's own target URL wins --
+    // the case that matters is an OAuth sign-in popped out of a site that
+    // requires a spoofed UA, landing on an identity provider that penalises
+    // exactly that spoof.  A resolver that declines (or none at all) falls
+    // through to the opener's tracked override, so pre-1.5.0 behaviour is
+    // preserved byte-for-byte for callers that never set one.
+    std::wstring ua = resolve_ua_for_win(opener, target_uri);
+    if (ua.empty()) ua = opener->user_agent;
+    if (ua.empty()) return;
     ICoreWebView2Settings *settings = nullptr;
     if (SUCCEEDED(child->get_Settings(&settings)) && settings) {
         ICoreWebView2Settings2 *settings2 = nullptr;
         if (SUCCEEDED(settings->QueryInterface(
                 __uuidof(ICoreWebView2Settings2),
                 reinterpret_cast<void **>(&settings2))) && settings2) {
-            settings2->put_UserAgent(opener->user_agent.c_str());
+            settings2->put_UserAgent(ua.c_str());
             settings2->Release();
         }
         settings->Release();
@@ -1769,7 +1829,7 @@ public:
 
                             // Canvas 21: inherit the opener's custom UA before
                             // the child's in-flight initial navigation.
-                            propagate_popup_user_agent(e, child);
+                            propagate_popup_user_agent(e, child, uri.c_str());
 
                             // Return the LINKED child to WebView2 so it drives
                             // the original request (POST verb+body,
@@ -1890,7 +1950,7 @@ public:
 
                         // Canvas 21: inherit the opener's custom UA before the
                         // child's in-flight initial navigation.
-                        propagate_popup_user_agent(e, child);
+                        propagate_popup_user_agent(e, child, uri.c_str());
 
                         args->put_NewWindow(child);   // LINKED to opener
                         args->put_Handled(TRUE);
@@ -2420,6 +2480,11 @@ static void destroy_engine(Engine *e) {
         }
         if (env) env->DeleteGlobalRef(e->popup_callback);
         e->popup_callback = nullptr;
+        // Canvas 21 (1.5.0): the User-Agent resolver's global ref goes with the
+        // popup callback -- only the popup path reads it, and a late popup
+        // during teardown would otherwise follow a freed ref.
+        if (env && e->ua_resolver) env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
         if (detach) e->jvm->DetachCurrentThread();
     }
     // Release the environment ref taken at environment-ready (Canvas 17).
@@ -3015,6 +3080,31 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set
             settings->Release();
         }
     });
+}
+
+// Install/clear the per-destination User-Agent resolver — Canvas 21 (1.5.0).
+// The resolver is a java.util.function.Function<String,String>; it is held as a
+// JNI global ref and consulted by the NewWindowRequested handler with the popup
+// child's own target URL.  resolver == nullptr clears it.  The global ref is
+// created/deleted on the CALLING thread (which holds a JNIEnv); the worker
+// thread only reads the jobject, which is safe for a global ref.  Never throws.
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set_1user_1agent_1resolver
+  (JNIEnv *env, jclass, jlong wv, jobject resolver) {
+    auto *e = (embed_win::Engine *)wv;
+    if (!e) return;
+    if (e->ua_resolver) {
+        env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+    }
+    if (resolver) {
+        e->ua_resolver = env->NewGlobalRef(resolver);
+    }
+}
+
+// Offscreen counterpart — no offscreen engine on Windows, so a silent no-op
+// (mirrors webview_offscreen_set_user_agent).
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1set_1user_1agent_1resolver
+  (JNIEnv *, jclass, jlong, jobject) {
 }
 
 // Clear the embedded WebView's HTTP resource cache — Canvas 22.  Purges the
