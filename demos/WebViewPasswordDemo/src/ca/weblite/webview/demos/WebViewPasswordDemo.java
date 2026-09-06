@@ -15,9 +15,10 @@
  *   3. Use the Save / Get / Delete buttons     -> programmatic API.
  *   4. Toggle "Enabled" and the store combo    -> gating + store swap.
  *
- * Coverage this release: macOS (Keychain).  On Linux / Windows the
- * programmatic API works but automatic capture/fill activate once the
- * per-platform native channel + store land (Canvases 27 / 28).
+ * Coverage: macOS (Keychain) and Windows (Credential Manager) are wired
+ * for automatic capture/fill.  On Linux the programmatic API works but
+ * automatic capture/fill activate once the libsecret channel + store land
+ * (Canvas 27).
  */
 package ca.weblite.webview.demos;
 

@@ -6,13 +6,14 @@
 # deleteCredential API, the enable/disable gate, and the Keychain vs
 # in-memory store swap.  See demos/WebViewPasswordDemo/README.md.
 #
-# COVERAGE CAVEAT: automatic login-capture and autofill are macOS-only in
-# this release.  On Linux the demo still runs and the programmatic API
-# plus the in-memory store work, but the native capture/fill channel and
-# the OS secret store (libsecret) arrive with a follow-up canvas, so
-# submitting the form will not raise the "Save password?" prompt and
-# Reload will not autofill yet.  Use the In-memory store and the
-# Save/Get/Delete buttons to exercise the API here.
+# COVERAGE CAVEAT: automatic login-capture and autofill are wired on macOS
+# (Keychain) and Windows (Credential Manager).  Linux is the remaining
+# platform: the demo still runs and the programmatic API plus the in-memory
+# store work, but the native capture/fill channel and the OS secret store
+# (libsecret) arrive with a follow-up canvas, so submitting the form will
+# not raise the "Save password?" prompt and Reload will not autofill yet.
+# Use the In-memory store and the Save/Get/Delete buttons to exercise the
+# API here.
 #
 # Usage:    ./run-linux-password-demo.sh             # lightweight (default)
 #           ./run-linux-password-demo.sh heavyweight # force heavyweight mode

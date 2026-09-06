@@ -10,13 +10,13 @@ REM Exercises the programmatic saveCredential / getCredential /
 REM deleteCredential API, the enable/disable gate, and the Keychain vs
 REM in-memory store swap.  See demos\WebViewPasswordDemo\README.md.
 REM
-REM COVERAGE CAVEAT: automatic login-capture and autofill are macOS-only in
-REM this release.  On Windows the demo still runs and the programmatic API
-REM plus the in-memory store work, but the native capture/fill channel and
-REM the OS secret store (Credential Manager) arrive with a follow-up canvas,
-REM so submitting the form will not raise the "Save password?" prompt and
-REM Reload will not autofill yet.  Use the In-memory store and the
-REM Save/Get/Delete buttons to exercise the API here.
+REM Automatic login-capture, the "Save password?" prompt, and autofill on
+REM reload are wired on Windows (Canvas 28): the native __webview_pw__
+REM channel routes through WebView2's WebMessageReceived, and credentials
+REM are stored in the Windows Credential Manager (this library's own
+REM namespace, not the Edge profile; Edge autosave is disabled).  Requires a
+REM WebView2 Runtime exposing ICoreWebView2Settings4 for the autosave
+REM toggle; the capture/store path itself works on any Evergreen runtime.
 REM
 REM Requires:
 REM   - JAVA_HOME set to a JDK 8+ install.

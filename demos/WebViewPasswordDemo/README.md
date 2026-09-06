@@ -31,10 +31,10 @@ redacted marker).
 
 ## Coverage
 
-macOS is wired in this release (Keychain). On Linux and Windows the
-programmatic API works and the store degrades gracefully, but automatic
-capture / autofill activate once the per-platform native channel and
-secret store land (Canvases 27 / 28).
+macOS (Keychain) and Windows (Credential Manager) are wired: automatic
+capture, the save prompt, and autofill all work. On Linux the programmatic
+API works and the store degrades gracefully, but automatic capture /
+autofill activate once the libsecret channel and store land (Canvas 27).
 
 ## Running
 

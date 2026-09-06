@@ -145,10 +145,11 @@ generated_at: 2026-08-13T15:30:00-07:00
     in-memory-store modes.
   - Top-level one-command launchers build the native lib and
     `dist/WebView.jar`, then compile and launch `WebViewPasswordDemo`:
-    `run-mac-password-demo.sh` (Keychain-backed capture/autofill), plus
-    `run-linux-password-demo.sh` and `run-windows-password-demo.bat` for
-    the same demo (programmatic API + in-memory store; native capture/fill
-    pending canvases 27 / 28).
+    `run-mac-password-demo.sh` (Keychain-backed capture/autofill) and
+    `run-windows-password-demo.bat` (Credential-Manager-backed
+    capture/autofill), plus `run-linux-password-demo.sh` for the same demo
+    (programmatic API + in-memory store; native capture/fill pending
+    canvas 27).
   - README grows a "Password manager" subsection documenting the
     `setPasswordManagerEnabled` / store / save-handler API, the
     origin-keying and origin-exact-match rules, the security notes
@@ -331,9 +332,10 @@ generated_at: 2026-08-13T15:30:00-07:00
 
 - **`run-linux-password-demo.sh`** / **`run-windows-password-demo.bat`**
   (new, repo root): self-contained launchers for the same demo, mirroring
-  the download-demo siblings. Capture/autofill are macOS-only this
-  release; on Linux/Windows the demo runs with the programmatic API and
-  in-memory store working, native capture/fill pending canvases 27 / 28.
+  the download-demo siblings. Capture/autofill are wired on macOS
+  (Keychain) and Windows (Credential Manager); on Linux the demo runs with
+  the programmatic API and in-memory store working, native capture/fill
+  pending canvas 27.
 
 - **README.md** (modified): "Password manager" subsection.
 
@@ -1139,11 +1141,12 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    verbatim except for targeting
    `demos/WebViewPasswordDemo/...WebViewPasswordDemo.java` and its main
    class. No macOS-only `-framework Security` step applies there (that is
-   a Keychain concern). Each header must state the coverage caveat:
-   automatic capture / autofill are macOS-only this release; on Linux and
-   Windows the demo still runs and the programmatic API plus the in-memory
-   store work, but the native capture/fill channel and OS secret store
-   arrive with canvases 27 / 28. The Linux script keeps the
+   a Keychain concern). Each header states the current coverage: automatic
+   capture / autofill are wired on the platforms whose native channel +
+   store have landed (macOS via Keychain, Windows via Credential Manager);
+   the remaining platform's demo still runs with the programmatic API and
+   in-memory store while its native channel + store arrive with its
+   coverage canvas (Linux → canvas 27). The Linux script keeps the
    heavyweight/lightweight mode selection of its sibling.
 
 ### 22. Update README
