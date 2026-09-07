@@ -147,6 +147,10 @@ public final class WebViewAdoptPopupDemo {
     }
 
     private static JPanel buildControls(WebViewComponent opener) {
+        // Canvas 21 Op 14.4: three rows, not one long FlowLayout line. A row
+        // wider than the frame silently wraps its trailing components out of
+        // view, and in a fixed-height row they become unreachable -- the
+        // control then looks absent rather than clipped.
         JPanel bar = new JPanel(new java.awt.FlowLayout(
             java.awt.FlowLayout.LEFT, 8, 6));
         bar.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
@@ -163,22 +167,17 @@ public final class WebViewAdoptPopupDemo {
         });
         bar.add(modeBox);
 
-        bar.add(new JLabel("   User-Agent:"));
-        JTextField uaField = new JTextField(SAFARI_UA, 34);
-        bar.add(uaField);
+        JTextField uaField = new JTextField(SAFARI_UA, 20);
         JButton setUa = new JButton("Set UA");
         setUa.addActionListener(e -> {
             opener.setUserAgent(uaField.getText());
             opener.setUrl(openerPage());  // reload so the UA applies
         });
-        bar.add(setUa);
         JButton resetUa = new JButton("Reset UA");
         resetUa.addActionListener(e -> {
             opener.setUserAgent(null);
             opener.setUrl(openerPage());
         });
-        bar.add(resetUa);
-
         // Canvas 21 (1.5.0): per-destination resolver.  Maps httpbin.org to a
         // distinctive UA while leaving every other host on the static field
         // value above, so the window.open -> https://httpbin.org/user-agent
@@ -207,14 +206,37 @@ public final class WebViewAdoptPopupDemo {
         });
         bar.add(clearCache);
 
-        // Canvas 21 Op 14.3: the address row below is what makes consultation
-        // point (b) -- a Java-initiated setUrl on an already-live view --
-        // testable on-device. Without it the opener only ever sat on a data:
-        // URL, which has no host, so the resolver never fired for it.
-        JPanel stack = new JPanel(new java.awt.GridLayout(2, 1));
+        // Row 2: the User-Agent field takes the slack, its buttons pin right,
+        // so the row's width never depends on the field's preferred size.
+        JPanel uaRow = fieldRow("User-Agent:", uaField, setUa, resetUa);
+
+        // Canvas 21 Op 14.3: the address row is what makes consultation point
+        // (b) -- a Java-initiated setUrl on an already-live view -- testable
+        // on-device. Without it the opener only ever sat on a data: URL, which
+        // has no host, so the resolver never fired for it.
+        JPanel stack = new JPanel(new java.awt.GridLayout(0, 1));
         stack.add(bar);
+        stack.add(uaRow);
         stack.add(buildAddressRow(opener));
         return stack;
+    }
+
+    /**
+     * One control row: a label, a text field that absorbs all slack, and
+     * buttons pinned to the trailing edge (Canvas 21 Op 14.4). Because the
+     * field is the only stretchy part, the row fits any window width and no
+     * button can wrap out of view.
+     */
+    private static JPanel fieldRow(String label, JTextField field, JButton... buttons) {
+        JPanel row = new JPanel(new java.awt.BorderLayout(8, 0));
+        row.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
+        row.add(new JLabel(label), java.awt.BorderLayout.WEST);
+        row.add(field, java.awt.BorderLayout.CENTER);
+        JPanel right = new JPanel(new java.awt.FlowLayout(
+            java.awt.FlowLayout.LEFT, 6, 0));
+        for (JButton b : buttons) right.add(b);
+        row.add(right, java.awt.BorderLayout.EAST);
+        return row;
     }
 
     /**
@@ -228,20 +250,13 @@ public final class WebViewAdoptPopupDemo {
      * field's value.
      */
     private static JPanel buildAddressRow(WebViewComponent opener) {
-        JPanel row = new JPanel(new java.awt.FlowLayout(
-            java.awt.FlowLayout.LEFT, 8, 6));
-        row.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
-
-        row.add(new JLabel("URL:"));
-        JTextField urlField = new JTextField(HTTPBIN_UA_URL, 38);
-        row.add(urlField);
+        JTextField urlField = new JTextField(HTTPBIN_UA_URL, 20);
 
         JButton go = new JButton("Go");
         go.addActionListener(e -> {
             String url = urlField.getText().trim();
             if (!url.isEmpty()) opener.setUrl(url);
         });
-        row.add(go);
         // Enter in the field navigates too.
         urlField.addActionListener(e -> {
             String url = urlField.getText().trim();
@@ -255,8 +270,6 @@ public final class WebViewAdoptPopupDemo {
             urlField.setText(HTTPBIN_UA_URL);
             opener.setUrl(HTTPBIN_UA_URL);
         });
-        row.add(httpbin);
-
         JButton httpbingo = new JButton("httpbingo (not overridden)");
         httpbingo.setToolTipText(
             "A different host the resolver declines, so it falls through to the "
@@ -265,17 +278,13 @@ public final class WebViewAdoptPopupDemo {
             urlField.setText(HTTPBINGO_UA_URL);
             opener.setUrl(HTTPBINGO_UA_URL);
         });
-        row.add(httpbingo);
-
         JButton home = new JButton("Home");
         home.setToolTipText("Back to the opener page, for the pop-up tests.");
         home.addActionListener(e -> {
             urlField.setText("");
             opener.setUrl(openerPage());
         });
-        row.add(home);
-
-        return row;
+        return fieldRow("URL:", urlField, go, httpbin, httpbingo, home);
     }
 
     private static void addTab(JTabbedPane tabs, String title,

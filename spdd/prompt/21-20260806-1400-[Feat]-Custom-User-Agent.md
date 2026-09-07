@@ -640,7 +640,17 @@ Files: `src_c/webview_embed.cpp` (macOS + Linux),
      `https://postman-echo.com/get` is the documented fallback if
      httpbingo is unreachable;
    - **Home** → back to the opener page, for the pop-up tests.
-4. README "Per-host user agent" subsection: the resolver API, the
+4. **Every control stays reachable at the default window size.** The demo's
+   controls must not be laid out as one long `FlowLayout` row per line: a row
+   wider than the frame silently wraps its trailing components out of view, and
+   in a fixed-height row they are then unreachable — the control looks absent
+   rather than clipped, which reads as "the feature was never built". The
+   controls are therefore split across rows, and any row carrying a text field
+   gives that field the slack (field in the centre, buttons pinned to the
+   trailing edge) so the row's width never depends on the field's preferred
+   size. The **resolver toggle** in particular sits on the first row, since it
+   is the control the point-(b) and point-(c) tests both switch on.
+5. README "Per-host user agent" subsection: the resolver API, the
    precedence chain, the three consultation points, the
    fall-through-on-null rule, and the cross-host-redirect limitation.
 
