@@ -214,11 +214,10 @@ generated_at: 2026-08-13T15:30:00-07:00
     origin only; passwords never printed).
   - Top-level one-command launchers build the native lib and
     `dist/WebView.jar`, then compile and launch `WebViewPasswordDemo`:
-    `run-mac-password-demo.sh` (Keychain-backed capture/autofill) and
+    `run-mac-password-demo.sh` (Keychain-backed capture/autofill),
     `run-windows-password-demo.bat` (Credential-Manager-backed
-    capture/autofill), plus `run-linux-password-demo.sh` for the same demo
-    (programmatic API + in-memory store; native capture/fill pending
-    canvas 27).
+    capture/autofill), and `run-linux-password-demo.sh`
+    (libsecret-backed capture/autofill, heavyweight + lightweight).
   - README grows a "Password manager" subsection documenting the
     `setPasswordManagerEnabled` / store / save-handler API, the
     origin-keying and origin-exact-match rules, the security notes
@@ -460,10 +459,10 @@ generated_at: 2026-08-13T15:30:00-07:00
 
 - **`run-linux-password-demo.sh`** / **`run-windows-password-demo.bat`**
   (new, repo root): self-contained launchers for the same demo, mirroring
-  the download-demo siblings. Capture/autofill are wired on macOS
-  (Keychain) and Windows (Credential Manager); on Linux the demo runs with
-  the programmatic API and in-memory store working, native capture/fill
-  pending canvas 27.
+  the download-demo siblings. Capture/autofill are wired on all three
+  platforms — macOS (Keychain), Windows (Credential Manager), and Linux
+  (libsecret) — degrading to a graceful no-op where no secret store is
+  available.
 
 - **README.md** (modified): "Password manager" subsection.
 
@@ -1425,12 +1424,12 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    `demos/WebViewPasswordDemo/...WebViewPasswordDemo.java` and its main
    class. No macOS-only `-framework Security` step applies there (that is
    a Keychain concern). Each header states the current coverage: automatic
-   capture / autofill are wired on the platforms whose native channel +
-   store have landed (macOS via Keychain, Windows via Credential Manager);
-   the remaining platform's demo still runs with the programmatic API and
-   in-memory store while its native channel + store arrive with its
-   coverage canvas (Linux → canvas 27). The Linux script keeps the
-   heavyweight/lightweight mode selection of its sibling.
+   capture / autofill are wired on all three platforms — macOS via
+   Keychain, Windows via Credential Manager, Linux via libsecret (both
+   heavyweight and lightweight) — with a graceful no-op where a platform
+   has no available secret store (e.g. a keyring-less Linux session). The
+   Linux script keeps the heavyweight/lightweight mode selection of its
+   sibling.
 
 ### 22. Update README
 File: `README.md`

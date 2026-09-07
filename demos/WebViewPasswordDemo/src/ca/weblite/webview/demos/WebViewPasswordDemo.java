@@ -19,10 +19,10 @@
  *   6. "Confirm before autofill"               -> browser-style consent
  *                                                 prompt before fill (006-004).
  *
- * Coverage: macOS (Keychain) and Windows (Credential Manager) are wired
- * for automatic capture/fill.  On Linux the programmatic API works but
- * automatic capture/fill activate once the libsecret channel + store land
- * (Canvas 27).
+ * Coverage: macOS (Keychain), Windows (Credential Manager), and Linux
+ * (libsecret / freedesktop Secret Service) are all wired for automatic
+ * capture/fill.  On a Linux session with no Secret Service provider the
+ * store degrades gracefully (nothing persists).
  */
 package ca.weblite.webview.demos;
 

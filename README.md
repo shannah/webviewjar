@@ -499,12 +499,15 @@ Key points:
   origin is never offered on another (`http` vs `https`, a different
   port, or a different host are all distinct).
 * **OS-native storage.**  Passwords live only in the OS secret store —
-  macOS **Keychain** and Windows **Credential Manager** are wired; Linux
-  **libsecret** / Secret Service is the remaining follow-up.  On Windows
-  the credentials are stored in the library's *own* Credential-Manager
+  macOS **Keychain**, Windows **Credential Manager**, and Linux
+  **libsecret** / Secret Service (GNOME Keyring, KWallet, or any
+  freedesktop Secret Service provider) are all wired.  On Windows the
+  credentials are stored in the library's *own* Credential-Manager
   namespace (per-user, DPAPI-protected), not the Edge profile, and Edge's
   built-in password autosave is disabled so it does not compete with this
-  manager.  The library never writes a plaintext credential file and never
+  manager.  On Linux libsecret is loaded at runtime (`libsecret-1.so.0`);
+  where no Secret Service provider is available the store degrades to a
+  no-op.  The library never writes a plaintext credential file and never
   logs a password.
 * **Overridable seams.**  `setCredentialStore(WebViewCredentialStore)`
   swaps the backing store (e.g. `InMemoryCredentialStore` for tests);
@@ -535,11 +538,13 @@ Key points:
   page DOM and is readable by any script running on that page — exactly
   the same exposure as a browser's autofill.  The library only ever fills
   the single origin-matched credential it chose to send.
-* **Coverage this release: macOS and Windows.**  Automatic capture /
-  autofill and the native secret store are wired on macOS (Keychain) and
-  Windows (Credential Manager).  On Linux the API is present and the
-  programmatic store degrades gracefully, but automatic capture / autofill
-  activate once the libsecret channel and store land (Canvas 27).
+* **Coverage: all three platforms.**  Automatic capture / autofill and the
+  native secret store are wired on macOS (Keychain), Windows (Credential
+  Manager), and Linux (libsecret, both heavyweight and lightweight).  Where
+  a platform has no available secret store — notably a headless or
+  keyring-less Linux session — the store degrades to a graceful no-op:
+  page load and form submission still work, and the programmatic API
+  simply reports nothing stored.
 
 Known limitation: multi-step / identifier-first login flows (username and
 password on separate pages, e.g. some Okta configurations) are captured

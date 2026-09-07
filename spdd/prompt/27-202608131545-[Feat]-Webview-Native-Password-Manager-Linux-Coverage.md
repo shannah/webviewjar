@@ -336,7 +336,8 @@ File: `src_c/webview_embed.cpp` (Linux)
 ### 9. README coverage note
 1. Update the "Password manager" subsection: Linux supported in both
    heavyweight and lightweight via libsecret (freedesktop Secret Service);
-   graceful no-op when no provider is available; Windows still pending.
+   graceful no-op when no provider is available. With macOS and Windows
+   already wired, this completes all-three-platform coverage.
 
 ## N · Norms
 

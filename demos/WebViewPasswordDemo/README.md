@@ -31,10 +31,11 @@ redacted marker).
 
 ## Coverage
 
-macOS (Keychain) and Windows (Credential Manager) are wired: automatic
-capture, the save prompt, and autofill all work. On Linux the programmatic
-API works and the store degrades gracefully, but automatic capture /
-autofill activate once the libsecret channel and store land (Canvas 27).
+All three platforms are wired: automatic capture, the save prompt, and
+autofill work on macOS (Keychain), Windows (Credential Manager), and Linux
+(libsecret / freedesktop Secret Service, both heavyweight and lightweight).
+On a Linux session with no Secret Service provider the store degrades
+gracefully (submit and reload still work; nothing persists).
 
 ## Running
 
