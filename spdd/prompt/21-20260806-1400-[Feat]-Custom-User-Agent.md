@@ -487,7 +487,17 @@ File: `windows/webview_embed.cc`
    string back rather than `L""`. When the capture failed the setter has
    nothing to restore, so it logs that the reset cannot be honoured
    rather than silently doing nothing.
-4. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
+4. **The pop-up propagation reports its outcome too.** Same reasoning as
+   the setter, and more acutely: `propagate_popup_user_agent` has three
+   silent exits (no opener/child, no UA to apply after the resolver and
+   the tracked override both decline, `ICoreWebView2Settings2`
+   unavailable) plus an unchecked `put_UserAgent`. A child that ends up on
+   the engine default is consistent with every one of them, so the site
+   must log which it took: the target URI, what the resolver answered,
+   what the opener's tracked override held, which of the two was chosen,
+   and the `HRESULT`. The call sites log entry, so "never reached" is
+   distinguishable from "reached and declined".
+5. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
    to apply, whether the `ICoreWebView2Settings2` query-interface
    succeeded, and the `HRESULT` from `put_UserAgent`. Silence is not
    acceptable here: WebView2's only failure mode for an unavailable `_2`

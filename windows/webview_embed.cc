@@ -1614,7 +1614,14 @@ private:
 // which is not attached to the JVM, so it attaches and detaches symmetrically.
 static std::wstring resolve_ua_for_win(Engine *e, const char *url) {
     std::wstring out;
-    if (!e || !e->ua_resolver || !e->jvm || !url || !*url) return out;
+    // Canvas 21 Op 7.4: "declined" and "never installed" imply different bugs,
+    // so say which.
+    if (!e || !e->jvm) { WV_LOG("resolve_ua: no engine/jvm"); return out; }
+    if (!e->ua_resolver) {
+        WV_LOG("resolve_ua: NO RESOLVER INSTALLED on this engine");
+        return out;
+    }
+    if (!url || !*url) { WV_LOG("resolve_ua: no target url"); return out; }
     JavaVM *jvm = e->jvm;
     JNIEnv *env = nullptr;
     bool detach = false;
@@ -1651,26 +1658,53 @@ static std::wstring resolve_ua_for_win(Engine *e, const char *url) {
 
 static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child,
                                        const char *target_uri) {
-    if (!opener || !child) return;
+    // Canvas 21 Op 7.4: this function has three silent exits and an unchecked
+    // put_UserAgent, and a child left on the engine default is consistent with
+    // every one of them. Log which path was taken.
+    WV_LOG("popup_ua: enter uri=%s opener=%p child=%p",
+           target_uri ? target_uri : "(null)", (void *)opener, (void *)child);
+    if (!opener || !child) {
+        WV_LOG("popup_ua: no opener or child -- nothing to propagate");
+        return;
+    }
     // Canvas 21 (1.5.0): a resolver keyed on the CHILD's own target URL wins --
     // the case that matters is an OAuth sign-in popped out of a site that
     // requires a spoofed UA, landing on an identity provider that penalises
     // exactly that spoof.  A resolver that declines (or none at all) falls
     // through to the opener's tracked override, so pre-1.5.0 behaviour is
     // preserved byte-for-byte for callers that never set one.
-    std::wstring ua = resolve_ua_for_win(opener, target_uri);
-    if (ua.empty()) ua = opener->user_agent;
+    std::wstring resolved = resolve_ua_for_win(opener, target_uri);
+    std::wstring ua = resolved;
+    const char *source = "resolver";
+    if (ua.empty()) {
+        ua = opener->user_agent;
+        source = "opener tracked override";
+    }
+    WV_LOG("popup_ua: resolver=%ls openerTracked=%ls chose=%s",
+           resolved.empty() ? L"(declined)" : resolved.c_str(),
+           opener->user_agent.empty() ? L"(none)" : opener->user_agent.c_str(),
+           ua.empty() ? "(nothing -- child keeps the engine default)" : source);
     if (ua.empty()) return;
     ICoreWebView2Settings *settings = nullptr;
-    if (SUCCEEDED(child->get_Settings(&settings)) && settings) {
+    HRESULT hrGet = child->get_Settings(&settings);
+    if (SUCCEEDED(hrGet) && settings) {
         ICoreWebView2Settings2 *settings2 = nullptr;
-        if (SUCCEEDED(settings->QueryInterface(
+        HRESULT hrQi = settings->QueryInterface(
                 __uuidof(ICoreWebView2Settings2),
-                reinterpret_cast<void **>(&settings2))) && settings2) {
-            settings2->put_UserAgent(ua.c_str());
+                reinterpret_cast<void **>(&settings2));
+        if (SUCCEEDED(hrQi) && settings2) {
+            HRESULT hrPut = settings2->put_UserAgent(ua.c_str());
+            WV_LOG("popup_ua: put_UserAgent hr=0x%08lx ua=%ls",
+                   (unsigned long)hrPut, ua.c_str());
             settings2->Release();
+        } else {
+            WV_LOG("popup_ua: ICoreWebView2Settings2 UNAVAILABLE on the child "
+                   "hr=0x%08lx -- cannot set its UA", (unsigned long)hrQi);
         }
         settings->Release();
+    } else {
+        WV_LOG("popup_ua: child get_Settings failed hr=0x%08lx",
+               (unsigned long)hrGet);
     }
 }
 
