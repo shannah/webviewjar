@@ -212,6 +212,10 @@ generated_at: 2026-08-13T15:30:00-07:00
     in-memory-store modes, plus a fill-consent toggle (install `CONFIRM`)
     and a "Get All" action that lists every stored credential (username +
     origin only; passwords never printed).
+  - A `WebViewPasswordOptInDemo` under `demos/` shows the Chrome-style
+    field-click opt-in fill: silent autofill suppressed (`DONT_FILL`),
+    an account chooser shown under the focused login field, a simulated
+    unlock, and fill only on explicit selection — all over the public API.
   - Top-level one-command launchers build the native lib and
     `dist/WebView.jar`, then compile and launch `WebViewPasswordDemo`:
     `run-mac-password-demo.sh` (Keychain-backed capture/autofill),
@@ -452,6 +456,16 @@ generated_at: 2026-08-13T15:30:00-07:00
 
 - **WebViewPasswordDemo** (new demo,
   `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDemo.java`).
+
+- **WebViewPasswordOptInDemo** (new demo,
+  `demos/WebViewPasswordOptInDemo/src/ca/weblite/webview/demos/WebViewPasswordOptInDemo.java`,
+  STORY-006-004). A Chrome-style **field-click opt-in** autofill demo: it
+  suppresses silent autofill with a `DONT_FILL` fill-handler, detects
+  login-field focus via injected JS + a bound callback, shows an account
+  chooser under the field, runs a simulated re-auth, and fills only on the
+  user's explicit selection via the library's `__webview_pw_fill__`
+  entrypoint. Host-driven, over the public API only; paired with
+  `run-mac-password-optin-demo.sh` and a demo README.
 
 - **`run-mac-password-demo.sh`** (new, repo root): self-contained
   build-and-run launcher for `WebViewPasswordDemo`, mirroring
@@ -1430,6 +1444,56 @@ File: `demos/WebViewPasswordDemo/src/ca/weblite/webview/demos/WebViewPasswordDem
    has no available secret store (e.g. a keyring-less Linux session). The
    Linux script keeps the heavyweight/lightweight mode selection of its
    sibling.
+
+### 21c. Create Demo — WebViewPasswordOptInDemo (Chrome-style opt-in fill)
+File: `demos/WebViewPasswordOptInDemo/src/ca/weblite/webview/demos/WebViewPasswordOptInDemo.java` (STORY-006-004)
+
+1. Purpose: demonstrate a **Chrome-style, user-opt-in autofill** built on
+   the public API — fields stay empty until the user focuses a login
+   field, a chooser lists the saved account(s), and the credential is
+   filled only after the user picks one and passes a simulated
+   re-authentication ("unlock") step. This is the field-click opt-in
+   flow (contrast `WebViewPasswordDemo`'s load-time `CONFIRM` prompt).
+2. Serves a login form (username + password) from a loopback `HttpServer`
+   so the page has a real origin, exactly like `WebViewPasswordDemo`.
+3. Store: seed an `InMemoryCredentialStore` (so the demo touches no real
+   OS Keychain and is repeatable) with two accounts for the origin so the
+   chooser shows a multi-account list; install it via `setCredentialStore`.
+4. **Suppress silent autofill** so the flow is genuinely opt-in:
+   `setFillPasswordHandler(event -> FillPasswordDisposition.DONT_FILL)`.
+   This proves the fill-consent seam disables the automatic path; the
+   demo then drives the fill itself on the user's explicit request.
+5. Detect field focus via injected JS (through the existing public
+   `addOnBeforeLoad`): a document-start script installs a capturing
+   `focusin` listener that, for a text/email/password input, base64url
+   encodes `"left|top|width|height|type"` (from `getBoundingClientRect`)
+   and calls a bound callback `window.__optin_focus__(payload)`. The demo
+   registers that callback with `addJavascriptCallback("__optin_focus__",
+   …)`; its `run(String)` receives the bind-shim JSON wrapper, extracts
+   the first arg (base64url, no JSON-special chars), decodes it, and hops
+   to the EDT.
+6. On focus, if `getCredentials(origin)` is non-empty, show a Chrome-like
+   account chooser (a `JPopupMenu` anchored under the focused field using
+   the reported rect, `invoker = the WebView component`); each item shows
+   the username + a masked password (never the real password).
+7. On selecting an account, run a **simulated re-auth** (a Swing
+   "Unlock passwords — use Touch ID / your login password?" confirm), and
+   only on approval fill the fields by evaluating the library's
+   write-only entrypoint `window.__webview_pw_fill__('<b64url user>',
+   '<b64url pass>')` via `eval` — reusing the library's field detection +
+   input/change dispatch. Cancel fills nothing.
+8. A log pane records each step (focus, chooser shown, unlock approved/
+   declined, filled) with passwords always redacted.
+9. Add a top-level `run-mac-password-optin-demo.sh` launcher mirroring
+   `run-mac-password-demo.sh` verbatim except for targeting
+   `demos/WebViewPasswordOptInDemo/...WebViewPasswordOptInDemo.java` and
+   its main class (still linking `-framework Security` for a consistent
+   Keychain-capable build even though this demo defaults to the in-memory
+   store).
+10. A `demos/WebViewPasswordOptInDemo/README.md` describes the flow and
+    notes it is a host-driven pattern over the public API
+    (`setFillPasswordHandler` DONT_FILL + `addOnBeforeLoad` +
+    `addJavascriptCallback` + `getCredentials` + `eval`).
 
 ### 22. Update README
 File: `README.md`

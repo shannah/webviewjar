@@ -553,6 +553,10 @@ best-effort per page; cross-page correlation is not guaranteed.
 See [`demos/WebViewPasswordDemo/`](demos/WebViewPasswordDemo/README.md)
 for a runnable example exercising capture, autofill, and the programmatic
 API in both the Keychain-backed and in-memory store modes.
+[`demos/WebViewPasswordOptInDemo/`](demos/WebViewPasswordOptInDemo/README.md)
+shows a **Chrome-style opt-in fill** — silent autofill suppressed, an
+account chooser under the focused login field, and a simulated unlock
+before the password is filled.
 
 ## Browser-initiated popups (`window.open`)
 
