@@ -53,6 +53,14 @@ Runtime ships with Windows 11):
 run-windows-password-optin-demo.bat
 ```
 
+Linux (JDK 8+, `g++`/`pkg-config`, GTK3 + WebKitGTK 4.0/4.1 dev packages;
+defaults to lightweight, pass `heavyweight` to force the other mode):
+
+```sh
+./run-linux-password-optin-demo.sh            # lightweight (default)
+./run-linux-password-optin-demo.sh heavyweight
+```
+
 Each launcher builds the platform native library and `dist/WebView.jar`,
 then compiles and runs the demo. The `WebViewPasswordOptInDemo` class is
 the same on every platform — it uses only the cross-platform public API,

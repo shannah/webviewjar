@@ -1497,6 +1497,11 @@ File: `demos/WebViewPasswordOptInDemo/src/ca/weblite/webview/demos/WebViewPasswo
      platform-neutral, so the flow is identical to macOS — the chooser is
      anchored under the focused login field and the fill goes through the
      same `__webview_pw_fill__` entrypoint.
+   - `run-linux-password-optin-demo.sh` (mirrors
+     `run-linux-password-demo.sh`; builds the WebKitGTK `libwebview.so`,
+     packages the jar, compiles and launches the opt-in demo, keeping the
+     heavyweight/lightweight mode selection of its sibling). Same
+     platform-neutral demo class and flow.
 10. A `demos/WebViewPasswordOptInDemo/README.md` describes the flow and
     notes it is a host-driven pattern over the public API
     (`setFillPasswordHandler` DONT_FILL + `addOnBeforeLoad` +
