@@ -40,14 +40,23 @@ touches no real OS Keychain and is repeatable. Passwords are never printed.
 
 ## Run it
 
+macOS:
+
 ```sh
 ./run-mac-password-optin-demo.sh
 ```
 
-(The launcher builds the macOS native lib, `dist/WebView.jar`, then
-compiles and runs the demo. On Linux/Windows the same
-`WebViewPasswordOptInDemo` class runs against a built jar; the flow is
-identical since it uses only the cross-platform public API.)
+Windows (JDK 8+ and Visual Studio with the C++ workload; a WebView2
+Runtime ships with Windows 11):
+
+```bat
+run-windows-password-optin-demo.bat
+```
+
+Each launcher builds the platform native library and `dist/WebView.jar`,
+then compiles and runs the demo. The `WebViewPasswordOptInDemo` class is
+the same on every platform — it uses only the cross-platform public API,
+so the opt-in flow is identical.
 
 ## Relationship to `WebViewPasswordDemo`
 

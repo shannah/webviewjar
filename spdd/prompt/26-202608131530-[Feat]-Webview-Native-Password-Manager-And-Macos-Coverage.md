@@ -1484,12 +1484,19 @@ File: `demos/WebViewPasswordOptInDemo/src/ca/weblite/webview/demos/WebViewPasswo
    input/change dispatch. Cancel fills nothing.
 8. A log pane records each step (focus, chooser shown, unlock approved/
    declined, filled) with passwords always redacted.
-9. Add a top-level `run-mac-password-optin-demo.sh` launcher mirroring
-   `run-mac-password-demo.sh` verbatim except for targeting
+9. Add top-level launchers mirroring the `WebViewPasswordDemo` siblings
+   verbatim except for targeting
    `demos/WebViewPasswordOptInDemo/...WebViewPasswordOptInDemo.java` and
-   its main class (still linking `-framework Security` for a consistent
-   Keychain-capable build even though this demo defaults to the in-memory
-   store).
+   its main class:
+   - `run-mac-password-optin-demo.sh` (mirrors `run-mac-password-demo.sh`;
+     still links `-framework Security` for a consistent Keychain-capable
+     build even though this demo defaults to the in-memory store).
+   - `run-windows-password-optin-demo.bat` (mirrors
+     `run-windows-password-demo.bat`; builds the WebView2 DLL, packages the
+     jar, compiles and launches the opt-in demo). The demo class is
+     platform-neutral, so the flow is identical to macOS — the chooser is
+     anchored under the focused login field and the fill goes through the
+     same `__webview_pw_fill__` entrypoint.
 10. A `demos/WebViewPasswordOptInDemo/README.md` describes the flow and
     notes it is a host-driven pattern over the public API
     (`setFillPasswordHandler` DONT_FILL + `addOnBeforeLoad` +
