@@ -600,6 +600,56 @@ wv.setUrl("https://example.com/");   // first request carries the custom UA
   pattern-faithful but must be validated on-device (confirm the header via an
   echo endpoint).
 
+## Per-host user agent
+
+One static UA cannot satisfy two sites that want opposite things. Slack
+rejects the engine's own UA as an unsupported browser and wants a mainstream
+desktop Chrome string; Google's sign-in, presented that same Chrome UA by a
+WebKit engine, scores it as a spoof — the claimed Chrome build has no
+`navigator.userAgentData`, sends no `Sec-CH-UA` client hints, and carries a
+WebKit TLS fingerprint — and answers with a CAPTCHA that cannot be passed at
+any score.
+
+`setUserAgentResolver` picks the UA per destination instead:
+
+```java
+WebViewComponent wv = WebViewComponent.create();
+wv.setUserAgent(SAFARI_UA);                  // the default for everything
+wv.setUserAgentResolver(url ->
+    url.contains("://app.slack.com/") ? CHROME_UA : null);   // null = fall through
+wv.setUrl("https://app.slack.com/client");   // first request carries CHROME_UA
+```
+
+* **Precedence.** The resolver's answer wins when it is non-null and
+  non-blank; otherwise the static `setUserAgent` value applies; otherwise the
+  engine default. A `null` or blank return means *fall through*, **not** "use
+  the engine default" — a resolver can never force the engine default over a
+  static override.
+* **When it is consulted.** At three points, each a navigation that is about
+  to start and that the library controls: before a view's initial navigation,
+  before any `setUrl` on a live view, and before a browser-initiated pop-up
+  child's first navigation — keyed on the **pop-up's own target URL**. That
+  last one is the point of the feature: an OAuth sign-in popped out of a site
+  that needs a spoofed UA lands on an identity provider that penalises exactly
+  that spoof. When a resolver is installed it supersedes the opener-copy
+  described under *Popups inherit it* above; with no resolver, opener-copy is
+  unchanged.
+* **Limitation.** This is not per-request switching. A server-side redirect
+  that crosses hosts *during* a navigation keeps the UA that navigation
+  started with. Intercepting every navigation was considered and rejected:
+  WebKit does not reliably expose `NSURLRequest.HTTPBody` to
+  `decidePolicyForNavigationAction` for form POSTs, so the
+  cancel-set-UA-reissue pattern would silently drop OAuth form-post bodies.
+* **Threading.** The resolver runs on the engine UI thread immediately before
+  the navigation it governs, so keep it fast and non-blocking — a host-suffix
+  check, not a network call. A resolver that throws is treated as a `null`
+  return and can never break a navigation.
+* **Platform coverage.** The pop-up path upcalls the resolver natively on
+  macOS, Linux and Windows; the other two points resolve in Java. As with the
+  UA setters, the native upcall ships pattern-faithful but must be validated
+  on-device (`WebViewAdoptPopupDemo`'s **Resolver** toggle plus the
+  `https://httpbin.org/user-agent` echo).
+
 ## Clear cache
 
 When a site renders blank because a stale (or poisoned) cached resource is

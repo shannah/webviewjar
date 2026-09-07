@@ -510,6 +510,30 @@ public class OffscreenWebView {
     }
 
     /**
+     * Install a per-destination User-Agent resolver: a function from the URL a
+     * navigation is about to load to the User-Agent to present for it.  A
+     * {@code null} or blank return falls through to the static
+     * {@link #setUserAgent(String)} value.
+     *
+     * <p>Only the engine-driven pop-up path upcalls this natively (a pop-up
+     * child's UA is keyed on the child's own target URL); navigations Java
+     * drives are resolved on the Java side before {@code navigate}.  The
+     * upcall runs on the engine UI thread, so the resolver must be fast and
+     * must not block; one that throws is treated as a {@code null} return.
+     *
+     * @param resolver the resolver, or {@code null} to clear it
+     * @return {@code this} for chaining
+     */
+    public OffscreenWebView setUserAgentResolver(java.util.function.Function<String, String> resolver) {
+        checkAlive();
+        if (resolver != null) {
+            heap.add(resolver);
+        }
+        WebViewNative.webview_offscreen_set_user_agent_resolver(peer, resolver);
+        return this;
+    }
+
+    /**
      * Purge the offscreen engine's HTTP resource cache (disk + memory),
      * keeping cookies and other site data.  Runs on the engine UI thread;
      * trigger a navigation afterwards to refetch from the network.

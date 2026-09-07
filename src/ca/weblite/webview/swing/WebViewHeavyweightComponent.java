@@ -122,6 +122,9 @@ public class WebViewHeavyweightComponent extends WebViewComponent {
     public WebViewComponent setUrl(String url) {
         pendingUrl = url;
         if (embedded != null) {
+            // Resolve the User-Agent for this destination before navigating,
+            // so the request carries it (Canvas 21, consultation point (b)).
+            applyResolvedUserAgentFor(url);
             embedded.navigate(url);
         }
         return this;
@@ -464,6 +467,14 @@ public class WebViewHeavyweightComponent extends WebViewComponent {
     }
 
     @Override
+    protected void applyUserAgentResolverToPeer(java.util.function.Function<String, String> resolver) {
+        EmbeddedWebView e = embedded;
+        if (e != null) {
+            e.setUserAgentResolver(resolver);
+        }
+    }
+
+    @Override
     protected void clearCacheOnPeer() {
         EmbeddedWebView e = embedded;
         if (e != null) {
@@ -542,9 +553,16 @@ public class WebViewHeavyweightComponent extends WebViewComponent {
             embedded.addJavascriptFunction(e.getKey(), e.getValue());
         }
         // Apply any custom User-Agent BEFORE the first navigate so the
-        // initial request carries it.
-        if (pendingUserAgent != null) {
-            embedded.setUserAgent(pendingUserAgent);
+        // initial request carries it.  With no resolver installed this
+        // resolves to pendingUserAgent, i.e. the pre-1.5.0 behaviour.
+        String initialUa = resolveUserAgentFor(pendingUrl);
+        if (initialUa != null) {
+            embedded.setUserAgent(initialUa);
+        }
+        // Push the resolver down so the engine-driven popup path can key a
+        // child's UA off the child's own target URL (consultation point (c)).
+        if (pendingUserAgentResolver != null) {
+            embedded.setUserAgentResolver(pendingUserAgentResolver);
         }
         // An adopted popup already carries the engine's own in-flight
         // navigation (the original request WebKit drove into the child, POST

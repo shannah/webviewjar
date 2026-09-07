@@ -209,6 +209,21 @@ struct Engine {
     // cannot distinguish an override from the default, so we cache it here.
     // Written / read on this engine's WebView2 worker thread only.
     std::wstring user_agent;
+
+    // Canvas 21 Op 7.3: the PRISTINE engine User-Agent, captured from
+    // get_UserAgent on the first setter call -- necessarily before any
+    // override, since the setter is the only thing that overrides. WebView2
+    // has no "clear" verb: put_UserAgent(L"") returns S_OK and leaves the
+    // previous override in force, so a reset has to write this string back
+    // literally. Worker thread only.
+    std::wstring default_user_agent;
+
+    // Canvas 21 (1.5.0): per-destination User-Agent resolver
+    // (java.util.function.Function<String,String>) held as a JNI global ref.
+    // Consulted at the popup-child creation site with the CHILD's own target
+    // URL; a decline falls back to the tracked `user_agent` above.  Deleted on
+    // replacement and on engine destroy.
+    jobject ua_resolver = nullptr;
 };
 
 static void fire_focus_callback(Engine *e, bool became) {
@@ -1591,19 +1606,164 @@ private:
 // interface (mirrors the embed setter's tolerance).  Nested popups reuse the
 // opener engine, so they inherit the same override.  Covers BOTH the ADOPT and
 // NATIVE_WINDOW dispositions.
-static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child) {
-    if (!opener || !child || opener->user_agent.empty()) return;
+// Canvas 21 (1.5.0): ask the per-destination User-Agent resolver which UA to
+// present for a navigation to `url`.  Returns the empty string when there is no
+// resolver, no url, or the resolver declines (a null/empty return) or throws --
+// a resolver must never be able to break a navigation, so a pending exception
+// is cleared and treated as a decline.  Runs on the WebView2 worker thread,
+// which is not attached to the JVM, so it attaches and detaches symmetrically.
+static std::wstring resolve_ua_for_win(Engine *e, const char *url) {
+    std::wstring out;
+    // Canvas 21 Op 7.4: "declined" and "never installed" imply different bugs,
+    // so say which.
+    if (!e || !e->jvm) { WV_LOG("resolve_ua: no engine/jvm"); return out; }
+    if (!e->ua_resolver) {
+        WV_LOG("resolve_ua: NO RESOLVER INSTALLED on this engine");
+        return out;
+    }
+    if (!url || !*url) { WV_LOG("resolve_ua: no target url"); return out; }
+    JavaVM *jvm = e->jvm;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm->AttachCurrentThread((void **)&env, nullptr) != JNI_OK || !env)
+            return out;
+        detach = true;
+    }
+    jstring ju = env->NewStringUTF(url);
+    jclass cls = env->GetObjectClass(e->ua_resolver);
+    if (cls && ju) {
+        jmethodID mid = env->GetMethodID(cls, "apply",
+            "(Ljava/lang/Object;)Ljava/lang/Object;");
+        if (mid) {
+            jobject r = env->CallObjectMethod(e->ua_resolver, mid, ju);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                r = nullptr;
+            }
+            if (r) {
+                const char *cs = env->GetStringUTFChars((jstring)r, nullptr);
+                if (cs && *cs) out = utf8_to_wide(cs);
+                if (cs) env->ReleaseStringUTFChars((jstring)r, cs);
+                env->DeleteLocalRef(r);
+            }
+        }
+    }
+    if (cls) env->DeleteLocalRef(cls);
+    if (ju) env->DeleteLocalRef(ju);
+    if (detach) jvm->DetachCurrentThread();
+    return out;
+}
+
+// Canvas 21 Op 7.5: sets the User-Agent on a pop-up child's FIRST request.
+//
+// put_UserAgent on the child returns S_OK and does not affect that request --
+// by the time NewWindowRequested hands us the child, WebView2 has committed the
+// navigation and a settings write cannot overtake it. The request HEADER can
+// still be rewritten, and a request cannot lose a race with itself.
+//
+// Scoped as narrowly as possible: filtered to the DOCUMENT resource context, so
+// only the child's main-document request is seen, and latched so it acts once
+// and is inert thereafter. Nothing is cancelled or re-issued -- only a header is
+// set -- so window.opener and the in-flight POST body (Canvas 18 D7) survive.
+class PopupUaHeaderHandler : public CallbackBase<
+    ICoreWebView2WebResourceRequestedEventHandler> {
+public:
+    explicit PopupUaHeaderHandler(std::wstring ua) : m_ua(std::move(ua)) {}
+    HRESULT STDMETHODCALLTYPE Invoke(
+        ICoreWebView2 *,
+        ICoreWebView2WebResourceRequestedEventArgs *args) override {
+        if (m_done || !args) return S_OK;
+        ICoreWebView2WebResourceRequest *req = nullptr;
+        if (SUCCEEDED(args->get_Request(&req)) && req) {
+            ICoreWebView2HttpRequestHeaders *headers = nullptr;
+            if (SUCCEEDED(req->get_Headers(&headers)) && headers) {
+                HRESULT hr = headers->SetHeader(L"User-Agent", m_ua.c_str());
+                WV_LOG("popup_ua: first-request header rewrite hr=0x%08lx ua=%ls",
+                       (unsigned long)hr, m_ua.c_str());
+                if (SUCCEEDED(hr)) m_done = true;
+                headers->Release();
+            } else {
+                WV_LOG("popup_ua: first-request get_Headers failed");
+            }
+            req->Release();
+        } else {
+            WV_LOG("popup_ua: first-request get_Request failed");
+        }
+        return S_OK;
+    }
+private:
+    std::wstring m_ua;
+    bool m_done = false;
+};
+
+static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child,
+                                       const char *target_uri) {
+    // Canvas 21 Op 7.4: this function has three silent exits and an unchecked
+    // put_UserAgent, and a child left on the engine default is consistent with
+    // every one of them. Log which path was taken.
+    WV_LOG("popup_ua: enter uri=%s opener=%p child=%p",
+           target_uri ? target_uri : "(null)", (void *)opener, (void *)child);
+    if (!opener || !child) {
+        WV_LOG("popup_ua: no opener or child -- nothing to propagate");
+        return;
+    }
+    // Canvas 21 (1.5.0): a resolver keyed on the CHILD's own target URL wins --
+    // the case that matters is an OAuth sign-in popped out of a site that
+    // requires a spoofed UA, landing on an identity provider that penalises
+    // exactly that spoof.  A resolver that declines (or none at all) falls
+    // through to the opener's tracked override, so pre-1.5.0 behaviour is
+    // preserved byte-for-byte for callers that never set one.
+    std::wstring resolved = resolve_ua_for_win(opener, target_uri);
+    std::wstring ua = resolved;
+    const char *source = "resolver";
+    if (ua.empty()) {
+        ua = opener->user_agent;
+        source = "opener tracked override";
+    }
+    WV_LOG("popup_ua: resolver=%ls openerTracked=%ls chose=%s",
+           resolved.empty() ? L"(declined)" : resolved.c_str(),
+           opener->user_agent.empty() ? L"(none)" : opener->user_agent.c_str(),
+           ua.empty() ? "(nothing -- child keeps the engine default)" : source);
+    if (ua.empty()) return;
     ICoreWebView2Settings *settings = nullptr;
-    if (SUCCEEDED(child->get_Settings(&settings)) && settings) {
+    HRESULT hrGet = child->get_Settings(&settings);
+    if (SUCCEEDED(hrGet) && settings) {
         ICoreWebView2Settings2 *settings2 = nullptr;
-        if (SUCCEEDED(settings->QueryInterface(
+        HRESULT hrQi = settings->QueryInterface(
                 __uuidof(ICoreWebView2Settings2),
-                reinterpret_cast<void **>(&settings2))) && settings2) {
-            settings2->put_UserAgent(opener->user_agent.c_str());
+                reinterpret_cast<void **>(&settings2));
+        if (SUCCEEDED(hrQi) && settings2) {
+            HRESULT hrPut = settings2->put_UserAgent(ua.c_str());
+            WV_LOG("popup_ua: put_UserAgent hr=0x%08lx ua=%ls",
+                   (unsigned long)hrPut, ua.c_str());
             settings2->Release();
+        } else {
+            WV_LOG("popup_ua: ICoreWebView2Settings2 UNAVAILABLE on the child "
+                   "hr=0x%08lx -- cannot set its UA", (unsigned long)hrQi);
         }
         settings->Release();
+    } else {
+        WV_LOG("popup_ua: child get_Settings failed hr=0x%08lx",
+               (unsigned long)hrGet);
     }
+
+    // The settings write above cannot reach the child's FIRST request, so hook
+    // that one request and set the header directly (Op 7.5). Registered here,
+    // inside the deferral and before Complete(), which is the only window in
+    // which the request has not yet gone out. put_UserAgent still covers every
+    // request after this one.
+    auto *hook = new PopupUaHeaderHandler(ua);
+    EventRegistrationToken hookToken{};
+    HRESULT hrFilter = child->AddWebResourceRequestedFilter(
+        L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT);
+    HRESULT hrAdd = child->add_WebResourceRequested(hook, &hookToken);
+    WV_LOG("popup_ua: first-request hook filter=0x%08lx add=0x%08lx",
+           (unsigned long)hrFilter, (unsigned long)hrAdd);
+    // WebView2 holds its own reference on success; on failure this is the last
+    // one and the handler deletes itself.
+    hook->Release();
 }
 
 // NewWindowRequested -> allow/deny via Java, then create the linked child in an
@@ -1769,7 +1929,7 @@ public:
 
                             // Canvas 21: inherit the opener's custom UA before
                             // the child's in-flight initial navigation.
-                            propagate_popup_user_agent(e, child);
+                            propagate_popup_user_agent(e, child, uri.c_str());
 
                             // Return the LINKED child to WebView2 so it drives
                             // the original request (POST verb+body,
@@ -1890,7 +2050,7 @@ public:
 
                         // Canvas 21: inherit the opener's custom UA before the
                         // child's in-flight initial navigation.
-                        propagate_popup_user_agent(e, child);
+                        propagate_popup_user_agent(e, child, uri.c_str());
 
                         args->put_NewWindow(child);   // LINKED to opener
                         args->put_Handled(TRUE);
@@ -2420,6 +2580,11 @@ static void destroy_engine(Engine *e) {
         }
         if (env) env->DeleteGlobalRef(e->popup_callback);
         e->popup_callback = nullptr;
+        // Canvas 21 (1.5.0): the User-Agent resolver's global ref goes with the
+        // popup callback -- only the popup path reads it, and a late popup
+        // during teardown would otherwise follow a freed ref.
+        if (env && e->ua_resolver) env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
         if (detach) e->jvm->DetachCurrentThread();
     }
     // Release the environment ref taken at environment-ready (Canvas 17).
@@ -3002,19 +3167,83 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set
         // propagate it to popup children (empty == engine default).  Recorded
         // on the worker thread, where the popup handler also reads it.
         e->user_agent = w;
-        if (!e->webview) return;
+        if (!e->webview) {
+            WV_LOG("set_user_agent: no webview yet, stored only");
+            return;
+        }
+        // Canvas 21 Op 7.3: report the outcome. WebView2's failure mode for an
+        // unavailable _2 interface is a silent no-op, so without this a UA that
+        // never changes is indistinguishable from one the engine ignored.
         ICoreWebView2Settings *settings = nullptr;
-        if (SUCCEEDED(e->webview->get_Settings(&settings)) && settings) {
+        HRESULT hrGet = e->webview->get_Settings(&settings);
+        if (SUCCEEDED(hrGet) && settings) {
             ICoreWebView2Settings2 *settings2 = nullptr;
-            if (SUCCEEDED(settings->QueryInterface(
+            HRESULT hrQi = settings->QueryInterface(
                     __uuidof(ICoreWebView2Settings2),
-                    reinterpret_cast<void **>(&settings2))) && settings2) {
-                settings2->put_UserAgent(w.c_str()); // empty -> default
+                    reinterpret_cast<void **>(&settings2));
+            if (SUCCEEDED(hrQi) && settings2) {
+                // Capture the pristine default before the first override, so a
+                // later reset has something literal to write back.
+                if (e->default_user_agent.empty()) {
+                    LPWSTR cur = nullptr;
+                    if (SUCCEEDED(settings2->get_UserAgent(&cur)) && cur) {
+                        e->default_user_agent.assign(cur);
+                        CoTaskMemFree(cur);
+                    }
+                }
+                // A reset restores the captured default. put_UserAgent(L"") is
+                // NOT a reset on this engine -- it succeeds and does nothing.
+                const bool reset = w.empty();
+                const std::wstring &target =
+                    reset ? e->default_user_agent : w;
+                if (reset && target.empty()) {
+                    WV_LOG("set_user_agent: cannot reset -- the engine default "
+                           "was never captured; the previous override stays in "
+                           "force");
+                } else {
+                    HRESULT hrPut = settings2->put_UserAgent(target.c_str());
+                    WV_LOG("set_user_agent: put_UserAgent hr=0x%08lx %sua=%ls",
+                           (unsigned long)hrPut,
+                           reset ? "(restoring captured default) " : "",
+                           target.c_str());
+                }
                 settings2->Release();
+            } else {
+                WV_LOG("set_user_agent: ICoreWebView2Settings2 UNAVAILABLE "
+                       "hr=0x%08lx -- the runtime is too old to set a UA; "
+                       "this call is a no-op", (unsigned long)hrQi);
             }
             settings->Release();
+        } else {
+            WV_LOG("set_user_agent: get_Settings failed hr=0x%08lx",
+                   (unsigned long)hrGet);
         }
     });
+}
+
+// Install/clear the per-destination User-Agent resolver — Canvas 21 (1.5.0).
+// The resolver is a java.util.function.Function<String,String>; it is held as a
+// JNI global ref and consulted by the NewWindowRequested handler with the popup
+// child's own target URL.  resolver == nullptr clears it.  The global ref is
+// created/deleted on the CALLING thread (which holds a JNIEnv); the worker
+// thread only reads the jobject, which is safe for a global ref.  Never throws.
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set_1user_1agent_1resolver
+  (JNIEnv *env, jclass, jlong wv, jobject resolver) {
+    auto *e = (embed_win::Engine *)wv;
+    if (!e) return;
+    if (e->ua_resolver) {
+        env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+    }
+    if (resolver) {
+        e->ua_resolver = env->NewGlobalRef(resolver);
+    }
+}
+
+// Offscreen counterpart — no offscreen engine on Windows, so a silent no-op
+// (mirrors webview_offscreen_set_user_agent).
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1set_1user_1agent_1resolver
+  (JNIEnv *, jclass, jlong, jobject) {
 }
 
 // Clear the embedded WebView's HTTP resource cache — Canvas 22.  Purges the

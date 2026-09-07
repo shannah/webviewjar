@@ -428,6 +428,12 @@ struct Engine {
     // Canvas 16.  A child (popup) web view inherits this ref via its own
     // PopupEngine so nested popups work.
     jobject popup_callback = nullptr;
+    // Canvas 21 (1.5.0): per-destination User-Agent resolver
+    // (java.util.function.Function<String,String>) as a JNI global ref.
+    // Consulted at the popup-child creation site with the CHILD's target
+    // URL; a decline falls back to copying the opener's UA.  Deleted on
+    // replacement and on engine destroy.
+    jobject ua_resolver = nullptr;
 
     Engine() {}
     ~Engine() {}
@@ -918,6 +924,9 @@ struct PopupEngine {
     WebKitWebView *web = nullptr;       // the related child web view
     JavaVM *jvm = nullptr;
     jobject popup_callback = nullptr;   // inherited global ref
+    // Canvas 21 (1.5.0): inherited global ref, so a nested popup resolves
+    // its own child's UA the same way its opener did.
+    jobject ua_resolver = nullptr;
     jobject dialog_callback = nullptr;  // inherited global ref, may be null
     jobject download_callback = nullptr; // inherited global ref, may be null
     jlong popup_id = 0;
@@ -1024,6 +1033,51 @@ static int fire_popup_disposition(JavaVM *jvm, jobject cb,
     if (jp) env->DeleteLocalRef(jp);
     if (detach) jvm->DetachCurrentThread();
     return disposition;
+}
+
+// Canvas 21 (1.5.0): ask the per-destination User-Agent resolver which UA to
+// present for a navigation to `url`.  Returns a freshly allocated UTF-8 string
+// the CALLER must free(), or nullptr when there is no resolver, no url, or the
+// resolver declines (a null/empty return) or throws.  A resolver must never be
+// able to break a navigation, so a pending exception is cleared and treated as
+// a decline -- the caller then falls back to the opener-copy behaviour.
+// Invoked on the engine UI thread, which is not necessarily attached to the
+// JVM, so it attaches and detaches symmetrically.  The resolver object is
+// java.util.function.Function, invoked reflectively as apply(Object)Object.
+static char *resolve_ua_for(JavaVM *jvm, jobject resolver, const char *url) {
+    if (!jvm || !resolver || !url || !*url) return nullptr;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm->AttachCurrentThread((void **)&env, nullptr) != JNI_OK || !env)
+            return nullptr;
+        detach = true;
+    }
+    char *out = nullptr;
+    jstring ju = env->NewStringUTF(url);
+    jclass cls = env->GetObjectClass(resolver);
+    if (cls && ju) {
+        jmethodID mid = env->GetMethodID(cls, "apply",
+            "(Ljava/lang/Object;)Ljava/lang/Object;");
+        if (mid) {
+            jobject r = env->CallObjectMethod(resolver, mid, ju);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                r = nullptr;
+            }
+            if (r) {
+                const char *cs = env->GetStringUTFChars((jstring)r, nullptr);
+                if (cs && *cs) out = strdup(cs);
+                if (cs) env->ReleaseStringUTFChars((jstring)r, cs);
+                env->DeleteLocalRef(r);
+            }
+        }
+    }
+    if (cls) env->DeleteLocalRef(cls);
+    if (ju) env->DeleteLocalRef(ju);
+    if (detach) jvm->DetachCurrentThread();
+    return out;
 }
 
 // Fire onPopupOpened.  CallVoidMethod (fire-and-forget); the Java dispatcher
@@ -1159,6 +1213,7 @@ static void on_close_popup(WebKitWebView *web, gpointer user_data);
 // WebKitWebView for WebKit to adopt, or NULL to block the popup.
 static GtkWidget *handle_create_web_view(JavaVM *jvm, jobject popup_cb,
                                          jobject dialog_cb,
+                                         jobject ua_resolver,
                                          WebKitWebView *opener,
                                          WebKitNavigationAction *nav) {
     if (!popup_cb) return NULL;
@@ -1208,12 +1263,26 @@ static GtkWidget *handle_create_web_view(JavaVM *jvm, jobject popup_cb,
     // yields the engine default.  Composes for nested popups: a popup's child
     // reads the popup view's already-propagated UA.  Covers BOTH the ADOPT and
     // NATIVE_WINDOW dispositions.
-    if (opener) {
-        WebKitSettings *os = webkit_web_view_get_settings(opener);
+    //
+    // Canvas 21 (1.5.0): when a per-destination resolver is installed, the
+    // child's UA is chosen from the CHILD's own target URL rather than copied
+    // from the opener -- the case that matters is an OAuth sign-in popped out
+    // of a site that requires a spoofed UA, landing on an identity provider
+    // that penalises exactly that spoof.  A resolver that declines (or none at
+    // all) falls through to the opener-copy below, so pre-1.5.0 behaviour is
+    // preserved byte-for-byte for callers that never set one.
+    {
         WebKitSettings *cs = webkit_web_view_get_settings(child);
-        if (os && cs) {
-            const char *oua = webkit_settings_get_user_agent(os);
-            if (oua) webkit_settings_set_user_agent(cs, oua);
+        char *resolved = resolve_ua_for(jvm, ua_resolver, uri);
+        if (resolved) {
+            if (cs) webkit_settings_set_user_agent(cs, resolved);
+            free(resolved);
+        } else if (opener) {
+            WebKitSettings *os = webkit_web_view_get_settings(opener);
+            if (os && cs) {
+                const char *oua = webkit_settings_get_user_agent(os);
+                if (oua) webkit_settings_set_user_agent(cs, oua);
+            }
         }
     }
 
@@ -1256,6 +1325,9 @@ static GtkWidget *handle_create_web_view(JavaVM *jvm, jobject popup_cb,
     if (env) {
         pe->popup_callback = env->NewGlobalRef(popup_cb);
         if (dialog_cb) pe->dialog_callback = env->NewGlobalRef(dialog_cb);
+        // Canvas 21 (1.5.0): a nested popup resolves its own child's UA the
+        // same way its opener did, so the resolver is inherited transitively.
+        if (ua_resolver) pe->ua_resolver = env->NewGlobalRef(ua_resolver);
         // Downloads started in a popup belong to the OPENER's handler --
         // a transfer is the user's, not a property of which view began
         // it (Canvas 24).  The opener's DownloadSink is the source of
@@ -1391,10 +1463,12 @@ static void on_close_popup(WebKitWebView *web, gpointer user_data) {
         // (Canvas 24).
         if (pe->web) gtk_clear_download_sink(GTK_WIDGET(pe->web), env);
         if (pe->download_callback) env->DeleteGlobalRef(pe->download_callback);
+        if (pe->ua_resolver) env->DeleteGlobalRef(pe->ua_resolver);
         if (detach) pe->jvm->DetachCurrentThread();
     }
     pe->popup_callback = nullptr;
     pe->dialog_callback = nullptr;
+    pe->ua_resolver = nullptr;
     pe->download_callback = nullptr;
     delete pe;
 }
@@ -1405,7 +1479,8 @@ static GtkWidget *on_create_web_view_popup(WebKitWebView *web,
     PopupEngine *pe = static_cast<PopupEngine *>(user_data);
     if (!pe) return NULL;
     return handle_create_web_view(pe->jvm, pe->popup_callback,
-                                  pe->dialog_callback, web, nav);
+                                  pe->dialog_callback, pe->ua_resolver,
+                                  web, nav);
 }
 static gboolean on_script_dialog_popup(WebKitWebView *web,
         WebKitScriptDialog *dialog, gpointer user_data) {
@@ -1429,7 +1504,8 @@ static GtkWidget *on_create_web_view_engine(WebKitWebView *web,
     Engine *e = static_cast<Engine *>(user_data);
     if (!e) return NULL;
     return handle_create_web_view(e->jvm, e->popup_callback,
-                                  e->dialog_callback, web, nav);
+                                  e->dialog_callback, e->ua_resolver,
+                                  web, nav);
 }
 
 static void engine_on_message(Engine *e, const char *msg) {
@@ -1850,6 +1926,20 @@ static Engine *gtk_create_engine(JNIEnv *env, jobject component, jint debug,
 
 static void gtk_destroy_engine(Engine *e) {
     if (!e) return;
+    // Canvas 21 (1.5.0): drop the User-Agent resolver's global ref.  Only the
+    // popup-child creation path reads it, but a late popup during teardown
+    // would follow a freed ref, so it goes with the other callbacks.
+    if (e->ua_resolver) {
+        JNIEnv *env = nullptr;
+        bool detach = false;
+        if (e->jvm && e->jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+            e->jvm->AttachCurrentThread((void **)&env, nullptr);
+            detach = true;
+        }
+        if (env) env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+        if (detach) e->jvm->DetachCurrentThread();
+    }
     // Release the click callback's JNI global ref BEFORE we destroy the
     // GtkWidget tree so any pressed signal already dispatched but not yet
     // run sees a null field instead of invoking a freed ref.  Symmetric
@@ -2446,6 +2536,21 @@ static void gtk_set_user_agent(Engine *e, const char *ua) {
     if (s) webkit_settings_set_user_agent(s, ua);
 }
 
+// Canvas 21 (1.5.0): install/clear the per-destination User-Agent resolver.
+// Held as a JNI global ref so it survives the setting call; the previous ref is
+// released first.  Consulted only at the popup-child creation site (navigations
+// Java drives are resolved on the Java side before navigate).
+static void gtk_set_user_agent_resolver(Engine *e, JNIEnv *env, jobject r) {
+    if (!e || !env) return;
+    if (e->ua_resolver) {
+        env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+    }
+    if (r) {
+        e->ua_resolver = env->NewGlobalRef(r);
+    }
+}
+
 // Canvas 22: purge the WebKitGTK HTTP resource cache (memory + disk) for the
 // view's web context.  Clears the resource cache only -- the cookie manager
 // is untouched, so an active login survives.
@@ -2542,6 +2647,11 @@ static Engine *gtk_adopt_popup(JNIEnv *env, jobject parent, jlong popupId,
     // gtk_set_popup_callback / gtk_set_dialog_callback at attach).
     e->popup_callback = pe->popup_callback;
     pe->popup_callback = nullptr;
+    // Canvas 21 (1.5.0): the resolver rides along with the callbacks so an
+    // adopted popup keeps resolving its own children's UAs until the
+    // component's attach installs its own.
+    e->ua_resolver = pe->ua_resolver;
+    pe->ua_resolver = nullptr;
     e->dialog_callback = pe->dialog_callback;
     pe->dialog_callback = nullptr;
     // The adopted child keeps the DownloadSink it was created with, so an
@@ -2610,10 +2720,12 @@ static void gtk_discard_popup(jlong popupId) {
         // (Canvas 24).
         if (pe->web) gtk_clear_download_sink(GTK_WIDGET(pe->web), env);
         if (pe->download_callback) env->DeleteGlobalRef(pe->download_callback);
+        if (pe->ua_resolver) env->DeleteGlobalRef(pe->ua_resolver);
         if (detach) pe->jvm->DetachCurrentThread();
     }
     pe->popup_callback = nullptr;
     pe->dialog_callback = nullptr;
+    pe->ua_resolver = nullptr;
     pe->download_callback = nullptr;
     delete pe;
 }
@@ -2658,6 +2770,12 @@ struct OffEngine {
     // gtk_off_create_engine, which routes through the shared
     // handle_create_web_view inner function (Canvas 16).
     jobject popup_callback = nullptr;
+    // Canvas 21 (1.5.0): per-destination User-Agent resolver
+    // (java.util.function.Function<String,String>) as a JNI global ref.
+    // Consulted at the popup-child creation site with the CHILD's target
+    // URL; a decline falls back to copying the opener's UA.  Deleted on
+    // replacement and on engine destroy.
+    jobject ua_resolver = nullptr;
 };
 
 // Per-OffEngine wrapper for the `script-dialog` signal.  Reads page URL,
@@ -2691,7 +2809,8 @@ static GtkWidget *on_create_web_view_off_engine(WebKitWebView *web,
     OffEngine *e = static_cast<OffEngine *>(user_data);
     if (!e) return NULL;
     return handle_create_web_view(e->jvm, e->popup_callback,
-                                  e->dialog_callback, web, nav);
+                                  e->dialog_callback, e->ua_resolver,
+                                  web, nav);
 }
 
 // Parallel of engine_on_message for OffEngine: parse the {name, seq, args}
@@ -2894,6 +3013,20 @@ static OffEngine *gtk_off_create_engine(JNIEnv *env,
 
 static void gtk_off_destroy_engine(OffEngine *e) {
     if (!e) return;
+    // Canvas 21 (1.5.0): drop the User-Agent resolver's global ref.  Only the
+    // popup-child creation path reads it, but a late popup during teardown
+    // would follow a freed ref, so it goes with the other callbacks.
+    if (e->ua_resolver) {
+        JNIEnv *env = nullptr;
+        bool detach = false;
+        if (e->jvm && e->jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+            e->jvm->AttachCurrentThread((void **)&env, nullptr);
+            detach = true;
+        }
+        if (env) env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+        if (detach) e->jvm->DetachCurrentThread();
+    }
     // Drop the download-callback global ref and the view's DownloadSink
     // BEFORE the widget is destroyed (Canvas 24) -- same ordering rule
     // as the heavyweight engine.
@@ -3015,6 +3148,21 @@ static void gtk_off_set_user_agent(OffEngine *e, const char *ua) {
     if (s) webkit_settings_set_user_agent(s, ua);
 }
 
+// Canvas 21 (1.5.0): install/clear the per-destination User-Agent resolver.
+// Held as a JNI global ref so it survives the setting call; the previous ref is
+// released first.  Consulted only at the popup-child creation site (navigations
+// Java drives are resolved on the Java side before navigate).
+static void gtk_off_set_user_agent_resolver(OffEngine *e, JNIEnv *env, jobject r) {
+    if (!e || !env) return;
+    if (e->ua_resolver) {
+        env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+    }
+    if (r) {
+        e->ua_resolver = env->NewGlobalRef(r);
+    }
+}
+
 // Canvas 22: offscreen counterpart to gtk_clear_cache.
 static void gtk_off_clear_cache(OffEngine *e) {
     if (!e || !e->web) return;
@@ -3124,6 +3272,11 @@ static OffEngine *gtk_off_adopt_popup(JNIEnv *env, jlong popupId,
     // gtk_off_set_popup_callback / gtk_off_set_dialog_callback at attach).
     e->popup_callback = pe->popup_callback;
     pe->popup_callback = nullptr;
+    // Canvas 21 (1.5.0): the resolver rides along with the callbacks so an
+    // adopted popup keeps resolving its own children's UAs until the
+    // component's attach installs its own.
+    e->ua_resolver = pe->ua_resolver;
+    pe->ua_resolver = nullptr;
     e->dialog_callback = pe->dialog_callback;
     pe->dialog_callback = nullptr;
     // The adopted child keeps the DownloadSink it was created with, so an
@@ -3651,6 +3804,12 @@ struct Engine {
     // the opener's PopupDispatcher.  Cleared before ui_delegate is
     // released.
     jobject popup_callback = nullptr;
+    // Canvas 21 (1.5.0): per-destination User-Agent resolver
+    // (java.util.function.Function<String,String>) as a JNI global ref.
+    // Consulted at the popup-child creation site with the CHILD's target
+    // URL; a decline falls back to copying the opener's UA.  Deleted on
+    // replacement and on engine destroy.
+    jobject ua_resolver = nullptr;
 
     // For a child (popup) engine only: the NSWindow the engine created to
     // host the popup web view, and the opaque id correlating the
@@ -4599,6 +4758,51 @@ static int fire_popup_disposition(JavaVM *jvm, jobject cb,
     return disposition;
 }
 
+// Canvas 21 (1.5.0): ask the per-destination User-Agent resolver which UA to
+// present for a navigation to `url`.  Returns a freshly allocated UTF-8 string
+// the CALLER must free(), or nullptr when there is no resolver, no url, or the
+// resolver declines (a null/empty return) or throws.  A resolver must never be
+// able to break a navigation, so a pending exception is cleared and treated as
+// a decline -- the caller then falls back to the opener-copy behaviour.
+// Invoked on the engine UI thread, which is not necessarily attached to the
+// JVM, so it attaches and detaches symmetrically.  The resolver object is
+// java.util.function.Function, invoked reflectively as apply(Object)Object.
+static char *resolve_ua_for(JavaVM *jvm, jobject resolver, const char *url) {
+    if (!jvm || !resolver || !url || !*url) return nullptr;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm->AttachCurrentThread((void **)&env, nullptr) != JNI_OK || !env)
+            return nullptr;
+        detach = true;
+    }
+    char *out = nullptr;
+    jstring ju = env->NewStringUTF(url);
+    jclass cls = env->GetObjectClass(resolver);
+    if (cls && ju) {
+        jmethodID mid = env->GetMethodID(cls, "apply",
+            "(Ljava/lang/Object;)Ljava/lang/Object;");
+        if (mid) {
+            jobject r = env->CallObjectMethod(resolver, mid, ju);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                r = nullptr;
+            }
+            if (r) {
+                const char *cs = env->GetStringUTFChars((jstring)r, nullptr);
+                if (cs && *cs) out = strdup(cs);
+                if (cs) env->ReleaseStringUTFChars((jstring)r, cs);
+                env->DeleteLocalRef(r);
+            }
+        }
+    }
+    if (cls) env->DeleteLocalRef(cls);
+    if (ju) env->DeleteLocalRef(ju);
+    if (detach) jvm->DetachCurrentThread();
+    return out;
+}
+
 // Canvas 18: async notification that a popup child has been retained and is
 // ready to adopt.  Fire-and-forget on a detached worker thread (the Java
 // dispatcher marshals popupAdoptable to the EDT via invokeLater), mirroring
@@ -4724,9 +4928,24 @@ static id impl_create_web_view(id self, SEL, id webView, id configuration,
     // opener correctly leaves the child at the engine default.  Applied here
     // (before the `if (!adopt)` window setup) so it covers BOTH the ADOPT and
     // NATIVE_WINDOW dispositions.
-    id openerUA = e ? msg(e->webview, sel("customUserAgent")) : nullptr;
-    if (openerUA) {
-        msg<void, id>(child, sel("setCustomUserAgent:"), openerUA);
+    //
+    // Canvas 21 (1.5.0): when a per-destination resolver is installed, the
+    // child's UA is chosen from the CHILD's own target URL rather than copied
+    // from the opener -- the case that matters is an OAuth sign-in popped out
+    // of a site that requires a spoofed UA, landing on an identity provider
+    // that penalises exactly that spoof.  A resolver that declines (or none at
+    // all) falls through to the opener-copy, so pre-1.5.0 behaviour is
+    // preserved byte-for-byte for callers that never set one.
+    char *resolvedUA = e ? resolve_ua_for(jvm, e->ua_resolver, target.c_str())
+                         : nullptr;
+    if (resolvedUA) {
+        msg<void, id>(child, sel("setCustomUserAgent:"), ns_str(resolvedUA));
+        free(resolvedUA);
+    } else {
+        id openerUA = e ? msg(e->webview, sel("customUserAgent")) : nullptr;
+        if (openerUA) {
+            msg<void, id>(child, sel("setCustomUserAgent:"), openerUA);
+        }
     }
 
     // Attach a JNIEnv to create the child engine's inherited global refs.
@@ -4776,6 +4995,10 @@ static id impl_create_web_view(id self, SEL, id webView, id configuration,
         // it (Canvas 23).
         if (e->download_callback)
             child_e->download_callback = env->NewGlobalRef(e->download_callback);
+        // Canvas 21 (1.5.0): a nested popup resolves its own child's UA the
+        // same way its opener did, so the resolver is inherited transitively.
+        if (e->ua_resolver)
+            child_e->ua_resolver = env->NewGlobalRef(e->ua_resolver);
     }
     Class uicls = get_webview_embed_ui_delegate_cls();
     id ui = msg((id)uicls, sel("new"));
@@ -6432,6 +6655,21 @@ static void cocoa_set_user_agent(Engine *e, const char *ua) {
     });
 }
 
+// Canvas 21 (1.5.0): install/clear the per-destination User-Agent resolver.
+// Held as a JNI global ref so it survives the setting call; the previous ref is
+// released first.  Consulted only at the popup-child creation site (navigations
+// Java drives are resolved on the Java side before navigate).
+static void cocoa_set_user_agent_resolver(Engine *e, JNIEnv *env, jobject r) {
+    if (!e || !env) return;
+    if (e->ua_resolver) {
+        env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+    }
+    if (r) {
+        e->ua_resolver = env->NewGlobalRef(r);
+    }
+}
+
 // Canvas 22: purge the WKWebView's HTTP resource cache (disk + memory) via its
 // configuration's WKWebsiteDataStore.  Only the cache data types are removed,
 // so cookies / local storage / service workers survive (an active login is
@@ -6498,6 +6736,20 @@ static void cocoa_clear_cache(Engine *e) {
 //   6. delete e.
 static void cocoa_destroy_engine(Engine *e) {
     if (!e) return;
+    // Canvas 21 (1.5.0): drop the User-Agent resolver's global ref.  Only the
+    // popup-child creation path reads it, but a late popup during teardown
+    // would follow a freed ref, so it goes with the other callbacks.
+    if (e->ua_resolver) {
+        JNIEnv *env = nullptr;
+        bool detach = false;
+        if (e->jvm && e->jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+            e->jvm->AttachCurrentThread((void **)&env, nullptr);
+            detach = true;
+        }
+        if (env) env->DeleteGlobalRef(e->ua_resolver);
+        e->ua_resolver = nullptr;
+        if (detach) e->jvm->DetachCurrentThread();
+    }
     // Drop the webview from the engine map BEFORE any teardown work --
     // the swizzled responder hooks can fire at any moment during destroy
     // (AppKit unwinds the view hierarchy and resigns first responder),
@@ -7466,6 +7718,32 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_
     (void)peer;
 #endif
     if (ua && s) env->ReleaseStringUTFChars(ua, s);
+}
+
+// Install/clear the per-destination User-Agent resolver — Canvas 21 (1.5.0).
+// The resolver is a java.util.function.Function<String,String>; it is held as a
+// JNI global ref and consulted at the popup-child creation site with the
+// child's own target URL.  resolver == nullptr clears it.  Never throws.
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set_1user_1agent_1resolver
+  (JNIEnv *env, jclass, jlong wv, jobject resolver) {
+    if (wv == 0) return;
+#ifdef WEBVIEW_GTK
+    embed::gtk_set_user_agent_resolver((embed::Engine *)wv, env, resolver);
+#elif defined(WEBVIEW_COCOA)
+    embed::cocoa_set_user_agent_resolver((embed::Engine *)wv, env, resolver);
+#else
+    (void)wv; (void)env; (void)resolver;
+#endif
+}
+
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1set_1user_1agent_1resolver
+  (JNIEnv *env, jclass, jlong peer, jobject resolver) {
+    if (peer == 0) return;
+#ifdef WEBVIEW_GTK
+    embed::gtk_off_set_user_agent_resolver((embed::OffEngine *)peer, env, resolver);
+#else
+    (void)peer; (void)env; (void)resolver;
+#endif
 }
 
 // Clear the embedded WebView's HTTP resource cache — Canvas 22.  Resource
