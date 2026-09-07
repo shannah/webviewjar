@@ -246,6 +246,16 @@ Key points:
 **When** the user submits a login form,
 **Then** the exception surfaces via standard EDT uncaught-exception handling, nothing is stored, the WebView stays responsive, and the host app does not crash.
 
+#### AC21: Re-submitting an unchanged credential does not re-prompt to save
+**Given** a `WebViewComponent` with the manager enabled and a stored credential `{https://example.com, alice, s3cret}` (e.g. just autofilled),
+**When** the user submits the login form with username `alice` and password `s3cret` (the same, unchanged credential),
+**Then** no "Save password?" prompt appears and nothing new is written — the manager only offers to save a credential that is new or whose password changed.
+
+#### AC22: A changed password still prompts to save
+**Given** a `WebViewComponent` with the manager enabled and a stored credential `{https://example.com, alice, s3cret}`,
+**When** the user submits the login form with username `alice` and a **different** password `n3wpw`,
+**Then** the "Save password?" prompt appears (a changed password is offered for saving), and approving it updates the stored password to `n3wpw`.
+
 ### Non-Functional Expectations
 
 - Passwords are stored only in the OS Keychain (encrypted at rest, unlocked by the user's macOS login). The library writes no plaintext credential file and prints no password.

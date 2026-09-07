@@ -193,9 +193,39 @@ public final class PasswordDispatcher {
         } catch (IllegalArgumentException iae) {
             return; // malformed payload: drop silently
         }
+        // Run the store dedup check off the EDT and the native message
+        // thread; only a new or changed credential reaches the prompt.
+        io.execute(new Runnable() {
+            @Override public void run() { maybePrompt(origin, user, pass); }
+        });
+    }
+
+    /** On the io worker: drop the submission when it is already stored
+     *  unchanged; otherwise marshal the save prompt to the EDT. */
+    private void maybePrompt(String origin, String user, String pass) {
+        if (disposed || !enabled) return;
+        if (isAlreadyStored(origin, user, pass)) return; // unchanged: no prompt
         SwingUtilities.invokeLater(new Runnable() {
             @Override public void run() { runPrompt(origin, user, pass); }
         });
+    }
+
+    /** @return whether an identical {@code {origin, username, password}}
+     *  credential is already stored. Compares username AND password
+     *  explicitly, since {@link WebViewCredential#equals} ignores the
+     *  password. Fails open (returns {@code false}) if the store read
+     *  throws, so a save is still offered on a transient store error. */
+    private boolean isAlreadyStored(String origin, String user, String pass) {
+        try {
+            for (WebViewCredential c : store.findAll(origin)) {
+                if (c.username().equals(user) && c.password().equals(pass)) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            forward(t);
+        }
+        return false;
     }
 
     /** The page requested autofill; {@code frameUrl} is the native-stamped

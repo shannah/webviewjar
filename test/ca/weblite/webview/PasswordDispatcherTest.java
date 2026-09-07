@@ -243,6 +243,81 @@ public class PasswordDispatcherTest {
         assertTrue(e.toString().contains("***"));
     }
 
+    // ---- STORY-006-001 AC21/AC22: no re-prompt for unchanged creds ----
+
+    /** Let the io worker run, then the EDT, then the io worker again
+     *  (the save path hops io -> EDT -> io). */
+    private void settle() throws Exception {
+        Thread.sleep(80);
+        flushEdt();
+        Thread.sleep(80);
+        flushEdt();
+    }
+
+    @Test public void unchangedCredentialDoesNotReprompt() throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        final java.util.concurrent.atomic.AtomicInteger calls =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+        dispatcher.setHandler(new WebViewSavePasswordHandler() {
+            @Override public SavePasswordDisposition onLoginSubmitted(
+                    WebViewSavePasswordEvent e) {
+                calls.incrementAndGet();
+                return SavePasswordDisposition.SAVE;
+            }
+        });
+        // Same {origin, username, password} already stored (e.g. autofilled).
+        dispatcher.dispatchLoginSubmitted("https://example.com/login",
+            b64("alice"), b64("s3cret"));
+        settle();
+        assertEquals("unchanged credential must not invoke the save handler",
+            0, calls.get());
+        assertEquals("no duplicate stored", 1,
+            store.findAll("https://example.com").size());
+    }
+
+    @Test public void changedPasswordStillPrompts() throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        dispatcher.setHandler(new WebViewSavePasswordHandler() {
+            @Override public SavePasswordDisposition onLoginSubmitted(
+                    WebViewSavePasswordEvent e) {
+                return SavePasswordDisposition.SAVE;
+            }
+        });
+        // Same username, DIFFERENT password -> should prompt and overwrite.
+        dispatcher.dispatchLoginSubmitted("https://example.com/login",
+            b64("alice"), b64("n3wpw"));
+        assertTrue(awaitTrue(new java.util.concurrent.Callable<Boolean>() {
+            public Boolean call() {
+                return "n3wpw".equals(
+                    store.find("https://example.com").get().password());
+            }
+        }));
+        assertEquals("still one credential for the username", 1,
+            store.findAll("https://example.com").size());
+    }
+
+    @Test public void newUsernameStillPrompts() throws Exception {
+        store.save(new WebViewCredential("https://example.com", "alice", "s3cret"));
+        dispatcher.setHandler(new WebViewSavePasswordHandler() {
+            @Override public SavePasswordDisposition onLoginSubmitted(
+                    WebViewSavePasswordEvent e) {
+                return SavePasswordDisposition.SAVE;
+            }
+        });
+        // A different username at the same origin -> should prompt and add.
+        dispatcher.dispatchLoginSubmitted("https://example.com/login",
+            b64("bob"), b64("bobpw"));
+        assertTrue(awaitTrue(new java.util.concurrent.Callable<Boolean>() {
+            public Boolean call() {
+                for (WebViewCredential c
+                        : store.findAll("https://example.com")) {
+                    if (c.username().equals("bob")) return true;
+                }
+                return false;
+            }
+        }));
+    }
+
     // ---- STORY-006-004: autofill-consent handler ---------------------
 
     @Test public void defaultFillHandlerFillsWithoutPrompt() throws Exception {

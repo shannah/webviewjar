@@ -129,6 +129,20 @@ generated_at: 2026-08-13T15:30:00-07:00
   value present in the JS payload is ignored. This prevents a page at
   one origin from saving-into or reading another origin's credential by
   posting a forged origin directly to the channel.
+- **No re-prompt for an unchanged credential.** On a captured login
+  submission, before showing the save prompt / invoking the
+  save-handler, the dispatcher looks up the store for the submission's
+  origin: if a credential with the same `{origin, username}` is already
+  stored with the **same password**, the submission is dropped silently
+  (no prompt, no handler call, no store write). Only a **new**
+  `{origin, username}` or a **changed password** for an existing one
+  proceeds to the prompt/handler (where a SAVE upserts/overwrites). This
+  matches every browser's password manager, which offers to save only
+  when the credential is new or changed — so autofilling a stored
+  credential and re-submitting the form never re-asks to save it. The
+  store lookup runs on the dispatcher's `io` worker (off the EDT and the
+  native message thread); a store read that throws fails open (treated as
+  not-stored, so a save is still offered).
 - All save-policy callbacks run on the Swing EDT. The dispatcher
   marshals via `SwingUtilities.invokeLater` (NON-blocking — unlike
   `DialogDispatcher`'s `invokeAndWait`), because a login submission has
@@ -189,7 +203,9 @@ generated_at: 2026-08-13T15:30:00-07:00
   the only build-script change in this canvas; libsecret / Advapi32
   linkage is added by canvases 27 / 28.
 - Definition of Done:
-  - All 20 STORY-006-001 ACs pass on macOS with the new code.
+  - All 22 STORY-006-001 ACs pass on macOS with the new code (AC21/AC22
+    cover the no-re-prompt-for-unchanged / changed-password-still-prompts
+    dedup rule).
   - All 11 STORY-006-004 ACs (autofill-consent handler) pass headlessly:
     default fills with no prompt (no regression), `CONFIRM` shows a
     password-free confirmation, approve fills / decline fills nothing, a
@@ -416,7 +432,11 @@ generated_at: 2026-08-13T15:30:00-07:00
   restore defaults; disabled ⇒ automatic dispatch is dropped but
   programmatic methods still work; disposed ⇒ automatic dispatch is
   dropped. The fill-handler is consulted (on the EDT) only on the
-  automatic autofill path, never on the programmatic read methods.
+  automatic autofill path, never on the programmatic read methods. On a
+  captured submission it first checks the store (on the `io` worker) and
+  drops the submission before any prompt when an identical
+  `{origin, username, password}` credential is already stored (no
+  re-prompt for an unchanged credential).
 
 - **WebViewComponent** (modified;
   `src/ca/weblite/webview/swing/WebViewComponent.java`). Gains:
@@ -1110,7 +1130,24 @@ File: `src/ca/weblite/webview/PasswordDispatcher.java`
      - `String origin = Origins.canonical(frameUrl);` if null → return.
      - decode `user`/`pass` via `base64UrlDecode` (private helper; on
        `IllegalArgumentException` → return).
-     - `SwingUtilities.invokeLater(() -> runPrompt(origin, user, pass));`
+     - `io.execute(() -> maybePrompt(origin, user, pass));` — hand off to
+       the worker so the store dedup check runs off the EDT and the
+       native message thread.
+   - `private void maybePrompt(String origin, String user, String pass)`
+     (on the `io` worker):
+     - re-check `disposed || !enabled` → return.
+     - if `isAlreadyStored(origin, user, pass)` → return (the credential
+       is already stored unchanged; no prompt, no handler, no write).
+     - else `SwingUtilities.invokeLater(() -> runPrompt(origin, user, pass));`
+   - `private boolean isAlreadyStored(String origin, String user, String pass)`
+     (on the `io` worker): iterate `store.findAll(origin)`; return `true`
+     iff some credential has `username.equals(user)` **and**
+     `password.equals(pass)` (note `WebViewCredential.equals` ignores the
+     password, so compare both fields explicitly). Wrap in
+     `try/catch(Throwable)`; on error `forward(t)` and return `false`
+     (fail open — still offer to save). A changed password (same username,
+     different password) and a new username both return `false`, so the
+     prompt proceeds and a SAVE upserts.
    - `private void runPrompt(String origin, String user, String pass)`
      (on EDT):
      - re-check `disposed || !enabled` → return.
@@ -1551,6 +1588,16 @@ Files under `test/ca/weblite/webview/`:
    - `dispatchLoginSubmitted` with a `SAVE` handler stores the decoded
      credential under the canonical origin (feed a base64url payload).
    - `DONT_SAVE` stores nothing.
+   - **No re-prompt for an unchanged credential:** with a credential
+     already in the store, `dispatchLoginSubmitted` for the same
+     `{origin, username, password}` never invokes the save-handler (use a
+     handler that flips a flag / counts calls) and stores nothing extra —
+     the submission is dropped. A submission with the same username but a
+     **changed** password DOES invoke the handler (and a SAVE overwrites);
+     a **new** username also invokes the handler. Assert the dedup check
+     ran off the EDT (the handler, when it is invoked, still records
+     `SwingUtilities.isEventDispatchThread() == true`, but the drop path
+     never reaches the EDT).
    - disabled ⇒ neither prompt nor store touched; programmatic
      `saveCredential`/`getCredential` still work (AC12).
    - handler runs on the EDT (record `SwingUtilities.isEventDispatchThread()`).
@@ -1733,6 +1780,14 @@ Files under `test/ca/weblite/webview/`:
   `try/catch(Throwable)`; a store that throws (or a Keychain error)
   degrades to "not saved" / "not filled", never a crash (foundation for
   the Linux no-keyring AC12 in canvas 27).
+- **No re-prompt for an unchanged credential.** `dispatchLoginSubmitted`
+  drops a captured submission on the `io` worker (before any EDT prompt or
+  handler call) when `isAlreadyStored(origin, user, pass)` finds an
+  identical `{origin, username, password}` already in the store. Only a
+  new `{origin, username}` or a changed password reaches the save-handler;
+  this keeps autofill-then-submit from re-asking to save an unchanged
+  credential. A store read that throws fails open (submission proceeds to
+  the prompt), so a transient store error never silently loses a save.
 - **Enabled flag gates automatic behaviour only.** When disabled,
   `dispatchLoginSubmitted` / `dispatchFillRequested` return before any
   prompt / lookup / fill; `saveCredential` / `getCredential` /
