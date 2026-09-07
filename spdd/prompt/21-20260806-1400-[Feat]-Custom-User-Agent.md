@@ -58,32 +58,27 @@ generated_at: 2026-08-06T14:00:00-07:00
   / macOS), Canvas 16/17 (native-window Linux/Windows), and Canvas
   18/19/20 (popup adoption macOS/Linux/Windows).
 
-- **KNOWN LIMITATION — a pop-up child's User-Agent cannot be set on
-  WebView2.** Verified on-device: the propagation site runs, chooses a
-  UA (from the resolver or the opener's tracked override), and
-  `put_UserAgent` on the **child** returns `S_OK` — and the child's
-  first request still goes out with the engine default. By the time
-  `NewWindowRequested` hands us the child, WebView2 has already
-  committed that navigation, and a settings write cannot overtake it.
-  This is the same defect shape as the empty-string reset (Approach 2):
-  WebView2 accepts a settings write and does not necessarily act on it.
-  It applies equally to the 1.5.0 resolver and to the 1.3.1 opener-copy,
-  so **pop-up UA propagation has never worked on Windows**, and the
-  claim above that it did was never validated on-device.
-  The fallback behaviour is safe rather than wrong: a Windows pop-up
-  presents the engine's own (Chromium/Edge) UA, which is a truthful,
-  mainstream string that UA-gating sites accept — the failure mode the
-  propagation exists to prevent is a macOS/WebKit one. Callers who need
-  a specific UA in a Windows pop-up must currently open the destination
-  in a normal tab instead.
-  The candidate fix is `ICoreWebView2_2::add_WebResourceRequested` with
-  a filter on the child, rewriting the `User-Agent` **request header**
-  rather than the setting — per-request, so it cannot lose a race with a
-  navigation. Deliberately not attempted blind: it is non-trivial COM on
-  a path that currently preserves `window.opener` and the in-flight POST
-  body (Canvas 18 D7), and breaking either of those to fix a UA would be
-  a bad trade.
-
+- **A pop-up child's User-Agent is set on the REQUEST, not the setting
+  (Windows).** Verified on-device: `put_UserAgent` on a WebView2 pop-up
+  child returns `S_OK` and the child's first request still carries the
+  engine default. By the time `NewWindowRequested` hands us the child,
+  WebView2 has committed that navigation and a settings write cannot
+  overtake it — the same defect shape as the empty-string reset
+  (Approach 2): this engine accepts a settings write and does not
+  necessarily act on it. It applies equally to the 1.5.0 resolver and the
+  1.3.1 opener-copy, which write through the same call, so pop-up UA
+  propagation had never worked on Windows and the earlier claim that it
+  held on all three engines was never validated.
+  The request header can still be rewritten, and a request cannot lose a
+  race with itself: the child gets a `WebResourceRequested` hook,
+  registered inside the deferral **before** `Complete()`, which sets the
+  `User-Agent` header on its first document request (Op 7.5). The
+  `put_UserAgent` call stays and covers every request after that one — by
+  then the settings write has landed — so the two together give the child
+  a consistent UA. Nothing is cancelled or re-issued, only a header set,
+  so `window.opener` and the in-flight POST body (Canvas 18 D7) are
+  untouched. macOS and Linux are unaffected: `customUserAgent` and
+  `WebKitSettings` both apply to the child's first request already.
 - **Per-host User-Agent resolver (1.5.0).** Let a caller supply a
   *resolver* — a function from the URL a navigation is about to load
   to the User-Agent to present for it — so one embedded browser can
@@ -176,10 +171,10 @@ generated_at: 2026-08-06T14:00:00-07:00
     sends **that** UA on its first request — not the opener's — on
     **macOS and Linux**, for both ADOPT and NATIVE_WINDOW. Verifiable in
     `WebViewAdoptPopupDemo` via its resolver toggle plus the
-    `https://httpbin.org/user-agent` echo. **Windows is excluded** by the
-    known limitation above: its pop-up children keep the engine default,
-    and the diagnostic log is the evidence that the failure is the
-    engine's rather than this library's.
+    `https://httpbin.org/user-agent` echo. On **Windows** the same holds
+    via the first-request header rewrite (Op 7.5) rather than the setting;
+    the diagnostic log distinguishes a hook that never fired from one that
+    fired and was ignored, so a regression there stays legible.
   - **Point (b) is verifiable on-device, no pop-up involved.** With the
     resolver toggle **on**, navigating the opener (address bar or the
     one-click buttons) to the **overridden** host echoes the resolver's
@@ -527,7 +522,21 @@ File: `windows/webview_embed.cc`
    what the opener's tracked override held, which of the two was chosen,
    and the `HRESULT`. The call sites log entry, so "never reached" is
    distinguishable from "reached and declined".
-5. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
+5. **Pop-up children get their UA on the first request, not the setting.**
+   In `propagate_popup_user_agent`, after the existing `put_UserAgent`,
+   register a `WebResourceRequested` handler on the **child**, filtered to
+   `COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT` with a `"*"` URI filter, and
+   have it `SetHeader(L"User-Agent", ua)` on the request. It acts **once**
+   (a latch, so it is inert for every later request) and both registrations
+   happen inside the `NewWindowRequested` deferral, **before**
+   `Complete()` — that is the only window in which the child's first
+   request has not yet gone out. Keep `put_UserAgent`: it is what gives the
+   child a consistent UA for everything after the first request. The
+   handler follows the file's `CallbackBase` pattern and is `Release`d
+   after `add_WebResourceRequested`, so WebView2 holds the only reference.
+   Log the filter/add `HRESULT`s and the header rewrite, so a hook that
+   never fires is distinguishable from one that fired and was ignored.
+6. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
    to apply, whether the `ICoreWebView2Settings2` query-interface
    succeeded, and the `HRESULT` from `put_UserAgent`. Silence is not
    acceptable here: WebView2's only failure mode for an unavailable `_2`

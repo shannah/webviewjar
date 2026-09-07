@@ -1656,6 +1656,48 @@ static std::wstring resolve_ua_for_win(Engine *e, const char *url) {
     return out;
 }
 
+// Canvas 21 Op 7.5: sets the User-Agent on a pop-up child's FIRST request.
+//
+// put_UserAgent on the child returns S_OK and does not affect that request --
+// by the time NewWindowRequested hands us the child, WebView2 has committed the
+// navigation and a settings write cannot overtake it. The request HEADER can
+// still be rewritten, and a request cannot lose a race with itself.
+//
+// Scoped as narrowly as possible: filtered to the DOCUMENT resource context, so
+// only the child's main-document request is seen, and latched so it acts once
+// and is inert thereafter. Nothing is cancelled or re-issued -- only a header is
+// set -- so window.opener and the in-flight POST body (Canvas 18 D7) survive.
+class PopupUaHeaderHandler : public CallbackBase<
+    ICoreWebView2WebResourceRequestedEventHandler> {
+public:
+    explicit PopupUaHeaderHandler(std::wstring ua) : m_ua(std::move(ua)) {}
+    HRESULT STDMETHODCALLTYPE Invoke(
+        ICoreWebView2 *,
+        ICoreWebView2WebResourceRequestedEventArgs *args) override {
+        if (m_done || !args) return S_OK;
+        ICoreWebView2WebResourceRequest *req = nullptr;
+        if (SUCCEEDED(args->get_Request(&req)) && req) {
+            ICoreWebView2HttpRequestHeaders *headers = nullptr;
+            if (SUCCEEDED(req->get_Headers(&headers)) && headers) {
+                HRESULT hr = headers->SetHeader(L"User-Agent", m_ua.c_str());
+                WV_LOG("popup_ua: first-request header rewrite hr=0x%08lx ua=%ls",
+                       (unsigned long)hr, m_ua.c_str());
+                if (SUCCEEDED(hr)) m_done = true;
+                headers->Release();
+            } else {
+                WV_LOG("popup_ua: first-request get_Headers failed");
+            }
+            req->Release();
+        } else {
+            WV_LOG("popup_ua: first-request get_Request failed");
+        }
+        return S_OK;
+    }
+private:
+    std::wstring m_ua;
+    bool m_done = false;
+};
+
 static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child,
                                        const char *target_uri) {
     // Canvas 21 Op 7.4: this function has three silent exits and an unchecked
@@ -1706,6 +1748,22 @@ static void propagate_popup_user_agent(Engine *opener, ICoreWebView2 *child,
         WV_LOG("popup_ua: child get_Settings failed hr=0x%08lx",
                (unsigned long)hrGet);
     }
+
+    // The settings write above cannot reach the child's FIRST request, so hook
+    // that one request and set the header directly (Op 7.5). Registered here,
+    // inside the deferral and before Complete(), which is the only window in
+    // which the request has not yet gone out. put_UserAgent still covers every
+    // request after this one.
+    auto *hook = new PopupUaHeaderHandler(ua);
+    EventRegistrationToken hookToken{};
+    HRESULT hrFilter = child->AddWebResourceRequestedFilter(
+        L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT);
+    HRESULT hrAdd = child->add_WebResourceRequested(hook, &hookToken);
+    WV_LOG("popup_ua: first-request hook filter=0x%08lx add=0x%08lx",
+           (unsigned long)hrFilter, (unsigned long)hrAdd);
+    // WebView2 holds its own reference on success; on failure this is the last
+    // one and the handler deletes itself.
+    hook->Release();
 }
 
 // NewWindowRequested -> allow/deny via Java, then create the linked child in an
