@@ -44,8 +44,9 @@ generated_at: 2026-08-06T14:00:00-07:00
   to the newly created popup child **before its initial (in-flight)
   navigation**, so the popup's **first** request carries the opener's
   UA — not the engine default. When the opener has no override, the
-  child keeps the engine default. This holds on macOS, Linux, and
-  Windows. **Why.** `customUserAgent` (and its per-engine analogues)
+  child keeps the engine default. This holds on macOS and Linux.
+  **It does NOT hold on Windows** — see the known limitation below.
+  **Why.** `customUserAgent` (and its per-engine analogues)
   is a per-view **instance** property, not part of the
   `WKWebViewConfiguration` / related-view linkage the child inherits
   from the opener, so without explicit propagation the popup's first
@@ -56,6 +57,32 @@ generated_at: 2026-08-06T14:00:00-07:00
   canvases that own the child-creation sites: Canvas 15 (`window.open`
   / macOS), Canvas 16/17 (native-window Linux/Windows), and Canvas
   18/19/20 (popup adoption macOS/Linux/Windows).
+
+- **KNOWN LIMITATION — a pop-up child's User-Agent cannot be set on
+  WebView2.** Verified on-device: the propagation site runs, chooses a
+  UA (from the resolver or the opener's tracked override), and
+  `put_UserAgent` on the **child** returns `S_OK` — and the child's
+  first request still goes out with the engine default. By the time
+  `NewWindowRequested` hands us the child, WebView2 has already
+  committed that navigation, and a settings write cannot overtake it.
+  This is the same defect shape as the empty-string reset (Approach 2):
+  WebView2 accepts a settings write and does not necessarily act on it.
+  It applies equally to the 1.5.0 resolver and to the 1.3.1 opener-copy,
+  so **pop-up UA propagation has never worked on Windows**, and the
+  claim above that it did was never validated on-device.
+  The fallback behaviour is safe rather than wrong: a Windows pop-up
+  presents the engine's own (Chromium/Edge) UA, which is a truthful,
+  mainstream string that UA-gating sites accept — the failure mode the
+  propagation exists to prevent is a macOS/WebKit one. Callers who need
+  a specific UA in a Windows pop-up must currently open the destination
+  in a normal tab instead.
+  The candidate fix is `ICoreWebView2_2::add_WebResourceRequested` with
+  a filter on the child, rewriting the `User-Agent` **request header**
+  rather than the setting — per-request, so it cannot lose a race with a
+  navigation. Deliberately not attempted blind: it is non-trivial COM on
+  a path that currently preserves `window.opener` and the in-flight POST
+  body (Canvas 18 D7), and breaking either of those to fix a UA would be
+  a bad trade.
 
 - **Per-host User-Agent resolver (1.5.0).** Let a caller supply a
   *resolver* — a function from the URL a navigation is about to load
@@ -146,10 +173,13 @@ generated_at: 2026-08-06T14:00:00-07:00
     return, and that a throwing resolver falls through instead of
     propagating.
   - A popup opened toward a host the resolver maps to a distinct UA
-    sends **that** UA on its first request — not the opener's — on all
-    three engines, for both ADOPT and NATIVE_WINDOW. Verifiable in
+    sends **that** UA on its first request — not the opener's — on
+    **macOS and Linux**, for both ADOPT and NATIVE_WINDOW. Verifiable in
     `WebViewAdoptPopupDemo` via its resolver toggle plus the
-    `https://httpbin.org/user-agent` echo.
+    `https://httpbin.org/user-agent` echo. **Windows is excluded** by the
+    known limitation above: its pop-up children keep the engine default,
+    and the diagnostic log is the evidence that the failure is the
+    engine's rather than this library's.
   - **Point (b) is verifiable on-device, no pop-up involved.** With the
     resolver toggle **on**, navigating the opener (address bar or the
     one-click buttons) to the **overridden** host echoes the resolver's
