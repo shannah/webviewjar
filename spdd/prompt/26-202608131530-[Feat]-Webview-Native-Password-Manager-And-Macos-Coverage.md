@@ -1653,6 +1653,15 @@ Files under `test/ca/weblite/webview/`:
   demos under `demos/<Name>/src/...`, no Maven; tests under
   `test/ca/weblite/webview/`, headless, no `JFrame` shown, EDT via
   `SwingUtilities.invokeAndWait` in-test.
+- **Java sources stay ASCII-portable.** The demo launchers compile with
+  the platform `javac` default encoding (UTF-8 on macOS/Linux, but
+  typically Windows-1252 on Windows), so any non-ASCII character in a
+  char/string literal must be written as a `\uXXXX` escape (a bullet as
+  the char literal `'•'`, not the raw glyph), and comments/UI strings
+  use plain ASCII punctuation
+  (`-` not an em-dash). This keeps every demo compilable and correctly
+  rendered under any default encoding — a raw UTF-8 char literal breaks
+  the Windows build with "unclosed character literal".
 - **No automated GUI/native tests** — the 20 ACs are verified via
   `WebViewPasswordDemo` on macOS; the Java contract is unit-tested with an
   `InMemoryCredentialStore` and a `WebViewComponent` test double.

@@ -8,13 +8,13 @@
  * an optional load-time "Use saved password?" CONFIRM prompt), this demo
  * reproduces the flow a browser like Chrome uses:
  *
- *   1. Nothing is filled automatically on load — the login fields stay
+ *   1. Nothing is filled automatically on load - the login fields stay
  *      empty (silent autofill is suppressed with a DONT_FILL fill-handler).
  *   2. When the user focuses the username or password field, a dropdown
  *      chooser appears anchored under the field, listing the saved
  *      account(s) for the page's origin (username + a masked password).
  *   3. Picking an account runs a simulated re-authentication ("Unlock
- *      passwords — Touch ID / your login password"), mirroring the OS
+ *      passwords - Touch ID / your login password"), mirroring the OS
  *      re-auth Chrome does before revealing a saved password.
  *   4. Only on approval are the username + password filled in.
  *
@@ -91,7 +91,7 @@ public class WebViewPasswordOptInDemo {
     }
 
     private static void run() {
-        JFrame frame = new JFrame("WebView Password Manager — Chrome-style opt-in fill");
+        JFrame frame = new JFrame("WebView Password Manager - Chrome-style opt-in fill");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
         wv = WebViewComponent.create();
@@ -137,7 +137,7 @@ public class WebViewPasswordOptInDemo {
         frame.setVisible(true);
 
         append("Saved accounts for " + origin + ": alice, demo (in-memory).");
-        append("Click the username or password field — a chooser appears; "
+        append("Click the username or password field - a chooser appears; "
             + "pick an account and unlock to fill. Nothing fills on its own.");
         wv.setUrl(origin + "/");
     }
@@ -157,10 +157,10 @@ public class WebViewPasswordOptInDemo {
         }
         List<WebViewCredential> accounts = wv.getCredentials(origin);
         if (accounts.isEmpty()) {
-            append("field focused — no saved accounts for this origin.");
+            append("field focused - no saved accounts for this origin.");
             return;
         }
-        append("field focused — showing chooser (" + accounts.size()
+        append("field focused - showing chooser (" + accounts.size()
             + " account(s)).");
 
         JPopupMenu chooser = new JPopupMenu();
@@ -169,7 +169,7 @@ public class WebViewPasswordOptInDemo {
         chooser.add(header);
         chooser.add(new Separator());
         for (final WebViewCredential c : accounts) {
-            // Username + a masked password — never the real secret.
+            // Username + a masked password - never the real secret.
             JMenuItem item = new JMenuItem(
                 c.username() + "    " + mask(c.password().length()));
             item.addActionListener(e -> chooseAccount(c));
@@ -194,7 +194,7 @@ public class WebViewPasswordOptInDemo {
             "Unlock passwords",
             JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
         if (r != JOptionPane.OK_OPTION) {
-            append("unlock declined — nothing filled.");
+            append("unlock declined - nothing filled.");
             return;
         }
         // Fill via the library's write-only entrypoint (reuses its field
@@ -203,14 +203,14 @@ public class WebViewPasswordOptInDemo {
         String js = "window.__webview_pw_fill__('"
             + b64url(c.username()) + "','" + b64url(c.password()) + "')";
         wv.eval(js);
-        append("unlocked — filled " + c.username() + " (password redacted).");
+        append("unlocked - filled " + c.username() + " (password redacted).");
     }
 
     // ---- helpers ------------------------------------------------------
 
     private static String mask(int n) {
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.max(6, Math.min(n, 12)); i++) sb.append('•');
+        for (int i = 0; i < Math.max(6, Math.min(n, 12)); i++) sb.append('\u2022');
         return sb.toString();
     }
 
