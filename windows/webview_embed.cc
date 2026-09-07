@@ -210,6 +210,14 @@ struct Engine {
     // Written / read on this engine's WebView2 worker thread only.
     std::wstring user_agent;
 
+    // Canvas 21 Op 7.3: the PRISTINE engine User-Agent, captured from
+    // get_UserAgent on the first setter call -- necessarily before any
+    // override, since the setter is the only thing that overrides. WebView2
+    // has no "clear" verb: put_UserAgent(L"") returns S_OK and leaves the
+    // previous override in force, so a reset has to write this string back
+    // literally. Worker thread only.
+    std::wstring default_user_agent;
+
     // Canvas 21 (1.5.0): per-destination User-Agent resolver
     // (java.util.function.Function<String,String>) held as a JNI global ref.
     // Consulted at the popup-child creation site with the CHILD's own target
@@ -3082,10 +3090,31 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set
                     __uuidof(ICoreWebView2Settings2),
                     reinterpret_cast<void **>(&settings2));
             if (SUCCEEDED(hrQi) && settings2) {
-                HRESULT hrPut = settings2->put_UserAgent(w.c_str()); // empty -> default
-                WV_LOG("set_user_agent: put_UserAgent hr=0x%08lx ua=%ls",
-                       (unsigned long)hrPut,
-                       w.empty() ? L"(engine default)" : w.c_str());
+                // Capture the pristine default before the first override, so a
+                // later reset has something literal to write back.
+                if (e->default_user_agent.empty()) {
+                    LPWSTR cur = nullptr;
+                    if (SUCCEEDED(settings2->get_UserAgent(&cur)) && cur) {
+                        e->default_user_agent.assign(cur);
+                        CoTaskMemFree(cur);
+                    }
+                }
+                // A reset restores the captured default. put_UserAgent(L"") is
+                // NOT a reset on this engine -- it succeeds and does nothing.
+                const bool reset = w.empty();
+                const std::wstring &target =
+                    reset ? e->default_user_agent : w;
+                if (reset && target.empty()) {
+                    WV_LOG("set_user_agent: cannot reset -- the engine default "
+                           "was never captured; the previous override stays in "
+                           "force");
+                } else {
+                    HRESULT hrPut = settings2->put_UserAgent(target.c_str());
+                    WV_LOG("set_user_agent: put_UserAgent hr=0x%08lx %sua=%ls",
+                           (unsigned long)hrPut,
+                           reset ? "(restoring captured default) " : "",
+                           target.c_str());
+                }
                 settings2->Release();
             } else {
                 WV_LOG("set_user_agent: ICoreWebView2Settings2 UNAVAILABLE "

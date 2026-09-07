@@ -282,11 +282,21 @@ OffscreenWebView ..> WebViewNative : JNI
    and live on subsequent `setUserAgent` calls when the peer exists.
    No override → native setter never called → engine default.
 
-2. **Empty means default.** `setUserAgent(null|"")` stores `null`;
-   the native setter, when invoked with `null`, clears the engine
-   override (macOS `customUserAgent = nil`; GTK
-   `webkit_settings_set_user_agent(settings, NULL)` restores default;
-   WebView2 `put_UserAgent(L"")` — empty restores default).
+2. **Empty means default — but only two engines can say so directly.**
+   `setUserAgent(null|"")` stores `null`; the native setter, when
+   invoked with `null`, clears the engine override. macOS
+   (`customUserAgent = nil`) and GTK
+   (`webkit_settings_set_user_agent(settings, NULL)`) both restore the
+   default from a null.
+   **WebView2 does not.** `put_UserAgent(L"")` returns `S_OK` and
+   leaves the previous override in force — an earlier revision of this
+   canvas claimed the empty string restores the default, and that claim
+   was wrong; the setter implemented it faithfully and Windows was left
+   unable to reset a User-Agent at all. There is no "clear" verb on
+   `ICoreWebView2Settings2`, so the default has to be **captured and
+   restored literally**: read `get_UserAgent` once, before the first
+   override is applied, and write that captured string back whenever a
+   reset is asked for (Op 7.4).
 
 3. **Per-engine native facility.**
    - macOS WKWebView: `-[WKWebView setCustomUserAgent:]` with an
@@ -468,7 +478,16 @@ File: `windows/webview_embed.cc`
    `put_UserAgent(widen(ua ? ua : ""))`; no-op if the `_2` interface
    is unavailable.
 2. JNI bridge `Java_..._webview_1embed_1set_1user_1agent`.
-3. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
+3. **Reset is capture-and-restore, not an empty string.** `Engine` gains
+   a `default_user_agent`, captured lazily from
+   `ICoreWebView2Settings2::get_UserAgent` on the **first** setter call —
+   which is necessarily before any override has been applied, because the
+   setter is the only thing that overrides — and therefore holds the
+   pristine engine UA. A set with an empty/null UA writes that captured
+   string back rather than `L""`. When the capture failed the setter has
+   nothing to restore, so it logs that the reset cannot be honoured
+   rather than silently doing nothing.
+4. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
    to apply, whether the `ICoreWebView2Settings2` query-interface
    succeeded, and the `HRESULT` from `put_UserAgent`. Silence is not
    acceptable here: WebView2's only failure mode for an unavailable `_2`
@@ -706,8 +725,12 @@ Files: `src_c/webview_embed.cpp` (macOS + Linux),
 - **Backward compatibility (never-relax):** unset UA → native setter
   not invoked → engine default unchanged.
 - **Reset semantics:** `setUserAgent(null)` and `setUserAgent("")`
-  both clear the override on every engine (macOS `nil`, GTK `NULL`,
-  WebView2 empty string).
+  both clear the override on every engine — macOS `nil`, GTK `NULL`, and
+  on WebView2 by writing back the **captured default** (Op 7.3), never
+  `L""`, which that engine accepts and ignores. A reset that leaves the
+  previous UA in force is a bug on any engine, and is the specific defect
+  that made Windows unable to fall through from a per-host override back
+  to the static value.
 - **Timing:** applied before the first `navigate` at attach so the
   initial request carries it; live changes affect the next
   navigation only (documented; engines do not rewrite in-flight
