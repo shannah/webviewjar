@@ -3067,17 +3067,35 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set
         // propagate it to popup children (empty == engine default).  Recorded
         // on the worker thread, where the popup handler also reads it.
         e->user_agent = w;
-        if (!e->webview) return;
+        if (!e->webview) {
+            WV_LOG("set_user_agent: no webview yet, stored only");
+            return;
+        }
+        // Canvas 21 Op 7.3: report the outcome. WebView2's failure mode for an
+        // unavailable _2 interface is a silent no-op, so without this a UA that
+        // never changes is indistinguishable from one the engine ignored.
         ICoreWebView2Settings *settings = nullptr;
-        if (SUCCEEDED(e->webview->get_Settings(&settings)) && settings) {
+        HRESULT hrGet = e->webview->get_Settings(&settings);
+        if (SUCCEEDED(hrGet) && settings) {
             ICoreWebView2Settings2 *settings2 = nullptr;
-            if (SUCCEEDED(settings->QueryInterface(
+            HRESULT hrQi = settings->QueryInterface(
                     __uuidof(ICoreWebView2Settings2),
-                    reinterpret_cast<void **>(&settings2))) && settings2) {
-                settings2->put_UserAgent(w.c_str()); // empty -> default
+                    reinterpret_cast<void **>(&settings2));
+            if (SUCCEEDED(hrQi) && settings2) {
+                HRESULT hrPut = settings2->put_UserAgent(w.c_str()); // empty -> default
+                WV_LOG("set_user_agent: put_UserAgent hr=0x%08lx ua=%ls",
+                       (unsigned long)hrPut,
+                       w.empty() ? L"(engine default)" : w.c_str());
                 settings2->Release();
+            } else {
+                WV_LOG("set_user_agent: ICoreWebView2Settings2 UNAVAILABLE "
+                       "hr=0x%08lx -- the runtime is too old to set a UA; "
+                       "this call is a no-op", (unsigned long)hrQi);
             }
             settings->Release();
+        } else {
+            WV_LOG("set_user_agent: get_Settings failed hr=0x%08lx",
+                   (unsigned long)hrGet);
         }
     });
 }

@@ -189,10 +189,10 @@ public final class WebViewAdoptPopupDemo {
                 "Resolve httpbin.org to " + RESOLVER_UA + "; other hosts fall "
                 + "through to the User-Agent field.");
         resolverBox.addActionListener(e -> {
-            opener.setUserAgentResolver(resolverBox.isSelected()
-                    ? url -> url != null && url.contains("httpbin.org")
-                            ? RESOLVER_UA : null
-                    : null);
+            opener.setUserAgentResolver(
+                resolverBox.isSelected() ? WebViewAdoptPopupDemo::resolveUa : null);
+            System.out.println("[demo] resolver "
+                + (resolverBox.isSelected() ? "INSTALLED" : "cleared"));
             opener.setUrl(openerPage());
         });
         bar.add(resolverBox);
@@ -249,6 +249,23 @@ public final class WebViewAdoptPopupDemo {
      * on one engine, with no pop-up involved. With the toggle off, both echo the
      * field's value.
      */
+    /**
+     * The demo's per-destination resolver: {@code httpbin.org} gets
+     * {@link #RESOLVER_UA}, every other host is declined so the static
+     * {@code setUserAgent} value applies.
+     *
+     * <p>Prints every decision (Canvas 21 Op 14.3). Paired with the Windows
+     * setter's {@code WV_LOG} line, one run says unambiguously whether a wrong
+     * User-Agent came from this resolution chain or from an engine that ignored
+     * what it resolved.
+     */
+    private static String resolveUa(String url) {
+        boolean match = url != null && url.contains("httpbin.org");
+        System.out.println("[demo] resolver(" + url + ") -> "
+            + (match ? "RESOLVER_UA" : "(decline -> static UA)"));
+        return match ? RESOLVER_UA : null;
+    }
+
     private static JPanel buildAddressRow(WebViewComponent opener) {
         JTextField urlField = new JTextField(HTTPBIN_UA_URL, 20);
 

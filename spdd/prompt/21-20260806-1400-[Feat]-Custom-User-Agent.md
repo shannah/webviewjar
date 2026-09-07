@@ -468,6 +468,16 @@ File: `windows/webview_embed.cc`
    `put_UserAgent(widen(ua ? ua : ""))`; no-op if the `_2` interface
    is unavailable.
 2. JNI bridge `Java_..._webview_1embed_1set_1user_1agent`.
+3. **The setter reports its outcome via `WV_LOG`** — the UA it was asked
+   to apply, whether the `ICoreWebView2Settings2` query-interface
+   succeeded, and the `HRESULT` from `put_UserAgent`. Silence is not
+   acceptable here: WebView2's only failure mode for an unavailable `_2`
+   interface is a no-op, so without a log a UA that never changes is
+   indistinguishable from one the engine ignored, and the canvas already
+   requires this setter to be validated on-device (Safeguards). The log
+   is the instrument that makes that validation possible, and it is what
+   separates "Java resolved the wrong UA" from "the engine declined the
+   one Java resolved".
 
 ### 8. Test + README
 1. `test/ca/weblite/webview/WebViewComponentUserAgentTest.java`
@@ -640,6 +650,11 @@ Files: `src_c/webview_embed.cpp` (macOS + Linux),
      `https://postman-echo.com/get` is the documented fallback if
      httpbingo is unreachable;
    - **Home** → back to the opener page, for the pop-up tests.
+   The demo's resolver also **prints each decision** to stdout — the URL it
+   was asked about and whether it answered or declined. Paired with the
+   Windows setter's log (Op 7.3), one run then says unambiguously whether a
+   wrong UA came from the Java resolution chain or from an engine that
+   ignored what Java resolved.
 4. **Every control stays reachable at the default window size.** The demo's
    controls must not be laid out as one long `FlowLayout` row per line: a row
    wider than the frame silently wraps its trailing components out of view, and
