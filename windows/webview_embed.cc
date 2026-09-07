@@ -18,6 +18,9 @@
 // WIN32_LEAN_AND_MEAN excludes objbase.h, which defines `interface` (=struct)
 // used pervasively by WebView2.h's COM declarations.  Pull it in explicitly.
 #include <objbase.h>
+// Windows Credential Manager (CredWriteW / CredReadW / CredEnumerateW /
+// CredDeleteW / CredFree) for the password-manager secret store (Canvas 28).
+#include <wincred.h>
 
 #include <atomic>
 #include <cstdio>
@@ -167,6 +170,11 @@ struct Engine {
     // misattribute events.
     std::mutex downloads_mutex;
     std::map<ICoreWebView2DownloadOperation *, struct WinDownloadCtx *> downloads;
+
+    // JNI global ref to the registered WebViewPasswordCallback, or nullptr.
+    // Stored here on Windows (Canvas 26); Canvas 28 wires the __webview_pw__
+    // branch of the WebMessageReceived handler off this field.
+    jobject password_callback = nullptr;
 
     // JNI global ref to the registered WebViewPopupCallback, or nullptr —
     // Canvas 15.  Stored here on Windows; the follow-up Windows coverage
@@ -442,6 +450,89 @@ static char *fire_dialog_prompt(JavaVM *jvm, jobject callback,
     return result;  // caller owns; free with free()
 }
 
+// Password-manager fire helpers (Canvas 28) -- mirror the fire_dialog_*
+// shape.  Both target methods are void and non-blocking on the Java side
+// (PasswordDispatcher marshals the save prompt to the EDT via invokeLater
+// and runs store I/O on a worker), so unlike the dialog confirm/prompt
+// path these may be called directly from the WebMessageReceived worker
+// without a deferral.  The username / password arrive already base64url
+// encoded and are passed through verbatim; Java decodes them.  No-op when
+// the callback global ref is null.
+static void fire_password_submitted(JavaVM *jvm, jobject callback,
+                                    const char *frameUrl,
+                                    const char *b64user,
+                                    const char *b64pass) {
+    if (!jvm || !callback) return;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm->AttachCurrentThread((void **)&env, nullptr) != JNI_OK
+                || !env) {
+            return;
+        }
+        detach = true;
+    }
+    if (!env) {
+        if (detach) jvm->DetachCurrentThread();
+        return;
+    }
+    jstring jframe = env->NewStringUTF(frameUrl ? frameUrl : "");
+    jstring juser = env->NewStringUTF(b64user ? b64user : "");
+    jstring jpass = env->NewStringUTF(b64pass ? b64pass : "");
+    jclass cls = env->GetObjectClass(callback);
+    if (cls) {
+        jmethodID m = env->GetMethodID(
+            cls, "onLoginSubmitted",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+        if (m) {
+            env->CallVoidMethod(callback, m, jframe, juser, jpass);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+            }
+        }
+        env->DeleteLocalRef(cls);
+    }
+    if (jframe) env->DeleteLocalRef(jframe);
+    if (juser) env->DeleteLocalRef(juser);
+    if (jpass) env->DeleteLocalRef(jpass);
+    if (detach) jvm->DetachCurrentThread();
+}
+
+static void fire_password_fill_requested(JavaVM *jvm, jobject callback,
+                                         const char *frameUrl) {
+    if (!jvm || !callback) return;
+    JNIEnv *env = nullptr;
+    bool detach = false;
+    if (jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm->AttachCurrentThread((void **)&env, nullptr) != JNI_OK
+                || !env) {
+            return;
+        }
+        detach = true;
+    }
+    if (!env) {
+        if (detach) jvm->DetachCurrentThread();
+        return;
+    }
+    jstring jframe = env->NewStringUTF(frameUrl ? frameUrl : "");
+    jclass cls = env->GetObjectClass(callback);
+    if (cls) {
+        jmethodID m = env->GetMethodID(cls, "onFillRequested",
+                                       "(Ljava/lang/String;)V");
+        if (m) {
+            env->CallVoidMethod(callback, m, jframe);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+            }
+        }
+        env->DeleteLocalRef(cls);
+    }
+    if (jframe) env->DeleteLocalRef(jframe);
+    if (detach) jvm->DetachCurrentThread();
+}
+
 // IUnknown helper -- gives each WebView2 callback proper refcounting and
 // QueryInterface support.  The interfaces we implement are all single-
 // inheritance (Iface : IUnknown), so a templated base keeps boilerplate low.
@@ -544,6 +635,53 @@ public:
             args->get_WebMessageAsJson(&msg);
         }
         if (msg) {
+            // Password-manager channel (Canvas 28): the shared SHIM_JS posts
+            // `__webview_pw__:<payload>` on the single WebView2 message
+            // channel.  Demux by content -- a `__webview_pw__:` prefix is a
+            // login-submission ("S|b64user|b64pass") or fill-request ("F")
+            // and is routed to the password callback; everything else falls
+            // through to the normal bind dispatch.
+            std::string full = wide_to_utf8(msg);
+            static const std::string PW_PREFIX = "__webview_pw__:";
+            if (full.rfind(PW_PREFIX, 0) == 0) {
+                std::string payload = full.substr(PW_PREFIX.size());
+                // Committed source URL, read natively (the trusted origin).
+                std::string src;
+                LPWSTR src_w = nullptr;
+                if (SUCCEEDED(args->get_Source(&src_w)) && src_w) {
+                    src = wide_to_utf8(src_w);
+                    CoTaskMemFree(src_w);
+                } else if (m_engine && m_engine->webview) {
+                    LPWSTR page_w = nullptr;
+                    if (SUCCEEDED(m_engine->webview->get_Source(&page_w))
+                            && page_w) {
+                        src = wide_to_utf8(page_w);
+                        CoTaskMemFree(page_w);
+                    }
+                }
+                JavaVM *jvm = m_engine ? m_engine->jvm : nullptr;
+                jobject cb = m_engine ? m_engine->password_callback : nullptr;
+                if (cb && !payload.empty()) {
+                    if (payload[0] == 'S') {
+                        // S|b64user|b64pass -- the base64url fields never
+                        // contain '|', so a plain split is unambiguous.
+                        std::string rest = payload.substr(1);
+                        if (!rest.empty() && rest[0] == '|') rest = rest.substr(1);
+                        size_t bar = rest.find('|');
+                        std::string b64user = (bar == std::string::npos)
+                            ? rest : rest.substr(0, bar);
+                        std::string b64pass = (bar == std::string::npos)
+                            ? std::string() : rest.substr(bar + 1);
+                        fire_password_submitted(jvm, cb, src.c_str(),
+                                                b64user.c_str(),
+                                                b64pass.c_str());
+                    } else if (payload[0] == 'F') {
+                        fire_password_fill_requested(jvm, cb, src.c_str());
+                    }
+                }
+                CoTaskMemFree(msg);
+                return S_OK;
+            }
             engine_on_message(m_engine, msg);
             CoTaskMemFree(msg);
         }
@@ -2277,6 +2415,18 @@ static void engine_thread(Engine *e, HWND /*parent*/, int width, int height,
                         // the ScriptDialogHandler registered below.
                         // STORY-004-003.
                         settings->put_AreDefaultScriptDialogsEnabled(FALSE);
+                        // Disable Edge's built-in "save password?" autosave so
+                        // it does not compete with this library's own manager
+                        // (Canvas 28).  Guarded: a Runtime without
+                        // ICoreWebView2Settings4 is a silent no-op.
+                        ICoreWebView2Settings4 *settings4 = nullptr;
+                        if (SUCCEEDED(settings->QueryInterface(
+                                __uuidof(ICoreWebView2Settings4),
+                                reinterpret_cast<void **>(&settings4)))
+                                && settings4) {
+                            settings4->put_IsPasswordAutosaveEnabled(FALSE);
+                            settings4->Release();
+                        }
                         settings->Release();
                     }
 
@@ -2541,6 +2691,20 @@ static void destroy_engine(Engine *e) {
         e->dialog_callback = nullptr;
         if (detach) e->jvm->DetachCurrentThread();
     }
+    // Symmetric cleanup for the password callback global ref (Canvas 28).
+    // The WebMessageReceived handler fires off this field, so clear it
+    // before the worker thread tears down.
+    if (e->password_callback) {
+        JNIEnv *env = nullptr;
+        bool detach = false;
+        if (e->jvm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+            e->jvm->AttachCurrentThread((void **)&env, nullptr);
+            detach = true;
+        }
+        if (env) env->DeleteGlobalRef(e->password_callback);
+        e->password_callback = nullptr;
+        if (detach) e->jvm->DetachCurrentThread();
+    }
     // Symmetric cleanup for the download callback global ref (Canvas 25),
     // plus every download still in flight.  A download can outlive the
     // page and the navigation, so both go before the worker thread tears
@@ -2752,6 +2916,63 @@ static Engine *adopt_retained_popup(JNIEnv *env, HWND parent, RetainedPopup *rp,
     });
 
     return e;
+}
+
+// Standard base64url (no padding) over raw bytes -- used to build a
+// delimiter-safe Credential Manager TargetName in the password store
+// (Canvas 28).
+static std::string pw_b64url_encode(const std::string &in) {
+    static const char *T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        unsigned n = ((unsigned char)in[i] << 16)
+                   | ((unsigned char)in[i + 1] << 8)
+                   | ((unsigned char)in[i + 2]);
+        out.push_back(T[(n >> 18) & 63]);
+        out.push_back(T[(n >> 12) & 63]);
+        out.push_back(T[(n >> 6) & 63]);
+        out.push_back(T[n & 63]);
+    }
+    size_t rem = in.size() - i;
+    if (rem == 1) {
+        unsigned n = ((unsigned char)in[i] << 16);
+        out.push_back(T[(n >> 18) & 63]);
+        out.push_back(T[(n >> 12) & 63]);
+    } else if (rem == 2) {
+        unsigned n = ((unsigned char)in[i] << 16)
+                   | ((unsigned char)in[i + 1] << 8);
+        out.push_back(T[(n >> 18) & 63]);
+        out.push_back(T[(n >> 12) & 63]);
+        out.push_back(T[(n >> 6) & 63]);
+    }
+    return out;
+}
+
+static bool pw_b64url_decode(const std::string &in, std::string &out) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '-') return 62;
+        if (c == '_') return 63;
+        return -1;
+    };
+    out.clear();
+    int buf = 0, bits = 0;
+    for (char c : in) {
+        int v = val(c);
+        if (v < 0) return false;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((char)((buf >> bits) & 0xFF));
+        }
+    }
+    return true;
 }
 
 } // namespace embed_win
@@ -3109,6 +3330,208 @@ JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_
     // Windows has no offscreen engine; OffscreenWebView.create returns
     // null on Windows so this JNI bridge should never be reached.
     // Stub it for link-symmetry across all three native binaries.
+}
+
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set_1password_1callback
+  (JNIEnv *env, jclass, jlong wv, jobject cb) {
+    // Stores the WebViewPasswordCallback global ref that the
+    // __webview_pw__ branch of the WebMessageReceived handler fires off
+    // (Canvas 28).  Cleared here on replacement and in the engine destroy
+    // path.
+    auto *e = (Engine *)wv;
+    if (!e) return;
+    if (e->password_callback) {
+        env->DeleteGlobalRef(e->password_callback);
+        e->password_callback = nullptr;
+    }
+    if (cb) {
+        e->password_callback = env->NewGlobalRef(cb);
+    }
+}
+
+JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1offscreen_1set_1password_1callback
+  (JNIEnv *, jclass, jlong, jobject) {
+    // Windows has no offscreen engine; stub for link-symmetry.
+}
+
+// Credential store primitives — Canvas 28, backed by the Windows
+// Credential Manager (CredWriteW / CredEnumerateW / CredDeleteW).
+//
+// Each record is a CRED_TYPE_GENERIC credential whose TargetName is
+//   "<service>:" + b64url(origin) + "|" + b64url(username)
+// (origin and username are base64url-encoded so the '|' delimiter and any
+// URL characters are unambiguous), and whose CredentialBlob is UTF-8
+// "<savedAtMillis>\n<password>".  b64url keeps TargetName a valid,
+// delimiter-safe wide string.  The base64url helpers live in namespace
+// embed_win (above); reference them qualified from this extern "C" block.
+
+JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1save
+  (JNIEnv *env, jclass, jstring jservice, jstring jorigin, jstring juser,
+   jstring jpass, jlong millis) {
+    const char *service = env->GetStringUTFChars(jservice, nullptr);
+    const char *origin = env->GetStringUTFChars(jorigin, nullptr);
+    const char *user = env->GetStringUTFChars(juser, nullptr);
+    const char *pass = env->GetStringUTFChars(jpass, nullptr);
+    std::string target = std::string(service ? service : "") + ":"
+        + embed_win::pw_b64url_encode(origin ? origin : "") + "|"
+        + embed_win::pw_b64url_encode(user ? user : "");
+    std::string blob = std::to_string((long long)millis) + "\n"
+        + (pass ? pass : "");
+    std::wstring targetW = embed_win::utf8_to_wide(target.c_str());
+    std::wstring userW = embed_win::utf8_to_wide(user ? user : "");
+
+    CREDENTIALW cred = {};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = const_cast<LPWSTR>(targetW.c_str());
+    cred.CredentialBlobSize = (DWORD)blob.size();
+    cred.CredentialBlob = (LPBYTE)blob.data();
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    cred.UserName = const_cast<LPWSTR>(userW.c_str());
+    BOOL ok = CredWriteW(&cred, 0);
+    // Do not leave the plaintext password lingering in this buffer.
+    if (!blob.empty()) SecureZeroMemory(&blob[0], blob.size());
+
+    if (service) env->ReleaseStringUTFChars(jservice, service);
+    if (origin) env->ReleaseStringUTFChars(jorigin, origin);
+    if (user) env->ReleaseStringUTFChars(juser, user);
+    if (pass) env->ReleaseStringUTFChars(jpass, pass);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1find
+  (JNIEnv *env, jclass, jstring jservice, jstring jorigin) {
+    jclass strCls = env->FindClass("java/lang/String");
+    const char *service = env->GetStringUTFChars(jservice, nullptr);
+    const char *origin = env->GetStringUTFChars(jorigin, nullptr);
+    std::string svc = service ? service : "";
+    std::string targetOrigin = origin ? origin : "";
+    std::string prefix = svc + ":";
+    std::wstring filterW = embed_win::utf8_to_wide((svc + ":*").c_str());
+
+    std::vector<std::string> triples;
+    DWORD count = 0;
+    PCREDENTIALW *creds = nullptr;
+    if (CredEnumerateW(filterW.c_str(), 0, &count, &creds) && creds) {
+        for (DWORD i = 0; i < count; i++) {
+            PCREDENTIALW c = creds[i];
+            if (!c || !c->TargetName) continue;
+            std::string name = embed_win::wide_to_utf8(c->TargetName);
+            if (name.rfind(prefix, 0) != 0) continue;
+            std::string rest = name.substr(prefix.size());
+            size_t bar = rest.find('|');
+            if (bar == std::string::npos) continue;
+            std::string origin_dec, user_dec;
+            if (!embed_win::pw_b64url_decode(rest.substr(0, bar), origin_dec)) continue;
+            if (!embed_win::pw_b64url_decode(rest.substr(bar + 1), user_dec)) continue;
+            if (origin_dec != targetOrigin) continue;
+            std::string blob;
+            if (c->CredentialBlob && c->CredentialBlobSize > 0) {
+                blob.assign((const char *)c->CredentialBlob,
+                            (size_t)c->CredentialBlobSize);
+            }
+            std::string millisStr = "0", password;
+            size_t nl = blob.find('\n');
+            if (nl != std::string::npos) {
+                millisStr = blob.substr(0, nl);
+                password = blob.substr(nl + 1);
+            } else {
+                password = blob;
+            }
+            triples.push_back(user_dec);
+            triples.push_back(millisStr);
+            triples.push_back(password);
+        }
+        CredFree(creds);
+    }
+    if (service) env->ReleaseStringUTFChars(jservice, service);
+    if (origin) env->ReleaseStringUTFChars(jorigin, origin);
+
+    jobjectArray out =
+        env->NewObjectArray((jsize)triples.size(), strCls, nullptr);
+    for (size_t i = 0; i < triples.size(); i++) {
+        jstring js = env->NewStringUTF(triples[i].c_str());
+        env->SetObjectArrayElement(out, (jsize)i, js);
+        env->DeleteLocalRef(js);
+    }
+    return out;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1find_1all
+  (JNIEnv *env, jclass, jstring jservice) {
+    jclass strCls = env->FindClass("java/lang/String");
+    const char *service = env->GetStringUTFChars(jservice, nullptr);
+    std::string svc = service ? service : "";
+    std::string prefix = svc + ":";
+    std::wstring filterW = embed_win::utf8_to_wide((svc + ":*").c_str());
+
+    // Enumerate-all: same CredEnumerateW over the namespace prefix as find,
+    // but with no origin filter — every entry is kept and its origin emitted.
+    std::vector<std::string> quads;
+    DWORD count = 0;
+    PCREDENTIALW *creds = nullptr;
+    if (CredEnumerateW(filterW.c_str(), 0, &count, &creds) && creds) {
+        for (DWORD i = 0; i < count; i++) {
+            PCREDENTIALW c = creds[i];
+            if (!c || !c->TargetName) continue;
+            std::string name = embed_win::wide_to_utf8(c->TargetName);
+            if (name.rfind(prefix, 0) != 0) continue;
+            std::string rest = name.substr(prefix.size());
+            size_t bar = rest.find('|');
+            if (bar == std::string::npos) continue;
+            std::string origin_dec, user_dec;
+            if (!embed_win::pw_b64url_decode(rest.substr(0, bar), origin_dec)) continue;
+            if (!embed_win::pw_b64url_decode(rest.substr(bar + 1), user_dec)) continue;
+            std::string blob;
+            if (c->CredentialBlob && c->CredentialBlobSize > 0) {
+                blob.assign((const char *)c->CredentialBlob,
+                            (size_t)c->CredentialBlobSize);
+            }
+            std::string millisStr = "0", password;
+            size_t nl = blob.find('\n');
+            if (nl != std::string::npos) {
+                millisStr = blob.substr(0, nl);
+                password = blob.substr(nl + 1);
+            } else {
+                password = blob;
+            }
+            quads.push_back(origin_dec);
+            quads.push_back(user_dec);
+            quads.push_back(millisStr);
+            quads.push_back(password);
+        }
+        CredFree(creds);
+    }
+    if (service) env->ReleaseStringUTFChars(jservice, service);
+
+    jobjectArray out =
+        env->NewObjectArray((jsize)quads.size(), strCls, nullptr);
+    for (size_t i = 0; i < quads.size(); i++) {
+        jstring js = env->NewStringUTF(quads[i].c_str());
+        env->SetObjectArrayElement(out, (jsize)i, js);
+        env->DeleteLocalRef(js);
+    }
+    return out;
+}
+
+JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1delete
+  (JNIEnv *env, jclass, jstring jservice, jstring jorigin, jstring juser) {
+    const char *service = env->GetStringUTFChars(jservice, nullptr);
+    const char *origin = env->GetStringUTFChars(jorigin, nullptr);
+    const char *user = env->GetStringUTFChars(juser, nullptr);
+    std::string target = std::string(service ? service : "") + ":"
+        + embed_win::pw_b64url_encode(origin ? origin : "") + "|"
+        + embed_win::pw_b64url_encode(user ? user : "");
+    std::wstring targetW = embed_win::utf8_to_wide(target.c_str());
+    BOOL ok = CredDeleteW(targetW.c_str(), CRED_TYPE_GENERIC, 0);
+    if (service) env->ReleaseStringUTFChars(jservice, service);
+    if (origin) env->ReleaseStringUTFChars(jorigin, origin);
+    if (user) env->ReleaseStringUTFChars(juser, user);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1store_1available
+  (JNIEnv *, jclass) {
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL Java_ca_weblite_webview_WebViewNative_webview_1embed_1set_1popup_1callback

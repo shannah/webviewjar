@@ -22,6 +22,10 @@ g++ -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/linux" -fPIC -std=c++11 -Wa
 # NOTE: WebKitGTK/JavaScriptCore are intentionally NOT linked (only --cflags
 # for the headers). They are dlopen'd at runtime (4.1 preferred, 4.0 fallback)
 # by src_c/webkit_loader.cpp, so this single libwebview.so runs on both.
+# The password-manager credential store (Canvas 27) likewise dlopen's
+# libsecret-1.so.0 at first use rather than linking -lsecret -- matching the
+# same runtime-load convention. Absence of a Secret Service provider degrades
+# gracefully (the store becomes a no-op); it never blocks library load.
 mkdir -p natives/linux_64
 mv libwebview.so natives/linux_64/
 mvn -DskipTests package

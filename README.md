@@ -464,6 +464,100 @@ See [`demos/WebViewDownloadDemo/`](demos/WebViewDownloadDemo/README.md)
 for a runnable example that serves five download shapes from a loopback
 server and exercises all three handler modes.
 
+## Password manager
+
+The embedded engines (`WKWebView`, `WebKitGTK`, `WebView2`) do **not**
+give an embedding app the browser "offer to save this password / autofill
+it next time" experience — that is a browser-privileged feature the raw
+engine withholds.  `WebViewComponent` provides its own password manager
+instead: an injected script detects login-form submissions and the library
+shows a Swing "Save password?" prompt; on approval the credential is
+written to the **OS-native secret store**; on a later page load a stored
+credential for the same origin is auto-filled.
+
+```java
+WebViewComponent wv = WebViewComponent.create();
+// Enabled by default.  Turn it off with:
+wv.setPasswordManagerEnabled(false);
+
+// Programmatic access (works regardless of the enabled flag):
+wv.saveCredential(new WebViewCredential("https://example.com", "alice", "s3cret"));
+Optional<WebViewCredential> c = wv.getCredential("https://example.com");
+List<WebViewCredential> everything = wv.getAllCredentials(); // all origins
+wv.deleteCredential("https://example.com", "alice");
+
+// Require a confirmation (or an OS biometric check) before autofill:
+wv.setFillPasswordHandler(WebViewFillPasswordHandler.CONFIRM);
+```
+
+Key points:
+
+* **Origin keying.** Credentials are keyed by page **origin** =
+  scheme + host + port (the default port is implied by the scheme, so
+  `https://example.com` and `https://example.com:443` are the same
+  origin).  Autofill is **exact-origin only** — a credential for one
+  origin is never offered on another (`http` vs `https`, a different
+  port, or a different host are all distinct).
+* **OS-native storage.**  Passwords live only in the OS secret store —
+  macOS **Keychain**, Windows **Credential Manager**, and Linux
+  **libsecret** / Secret Service (GNOME Keyring, KWallet, or any
+  freedesktop Secret Service provider) are all wired.  On Windows the
+  credentials are stored in the library's *own* Credential-Manager
+  namespace (per-user, DPAPI-protected), not the Edge profile, and Edge's
+  built-in password autosave is disabled so it does not compete with this
+  manager.  On Linux libsecret is loaded at runtime (`libsecret-1.so.0`);
+  where no Secret Service provider is available the store degrades to a
+  no-op.  The library never writes a plaintext credential file and never
+  logs a password.
+* **Overridable seams.**  `setCredentialStore(WebViewCredentialStore)`
+  swaps the backing store (e.g. `InMemoryCredentialStore` for tests);
+  `setSavePasswordHandler(WebViewSavePasswordHandler)` replaces the
+  "Save password?" policy (return a disposition programmatically for
+  headless use).  Passing `null` to either restores the default.  Both
+  getters never return `null`.
+* **Autofill consent.**  By default a stored credential is filled
+  silently on page load.  `setFillPasswordHandler(WebViewFillPasswordHandler)`
+  gates that: install `WebViewFillPasswordHandler.CONFIRM` for a
+  browser-style "Use the saved password for `<origin>`?" prompt, or your
+  own handler that performs an OS biometric / re-authentication check
+  (Touch ID, Windows Hello) and returns `DONT_FILL` to decline.  The
+  event handed to the handler carries only the origin and username —
+  never the password.  Passing `null` restores the silent-autofill
+  default; the getter never returns `null`.  The consent handler gates
+  the automatic page-load autofill only — the programmatic
+  `getCredential` / `getCredentials` / `getAllCredentials` reads are
+  trusted host calls and are never gated.
+* **Managing saved passwords.**  `getAllCredentials()` enumerates every
+  stored credential across all origins (most-recently-saved first) — the
+  primitive you need to build a Chrome-style "manage saved passwords"
+  screen on top of the OS-native store, combined with `saveCredential`
+  (add/edit) and `deleteCredential` (remove).  Like the origin-scoped
+  reads it returns credentials to host code only; page JavaScript has no
+  path to any stored credential.
+* **Security note.**  Once a credential is auto-filled it lives in the
+  page DOM and is readable by any script running on that page — exactly
+  the same exposure as a browser's autofill.  The library only ever fills
+  the single origin-matched credential it chose to send.
+* **Coverage: all three platforms.**  Automatic capture / autofill and the
+  native secret store are wired on macOS (Keychain), Windows (Credential
+  Manager), and Linux (libsecret, both heavyweight and lightweight).  Where
+  a platform has no available secret store — notably a headless or
+  keyring-less Linux session — the store degrades to a graceful no-op:
+  page load and form submission still work, and the programmatic API
+  simply reports nothing stored.
+
+Known limitation: multi-step / identifier-first login flows (username and
+password on separate pages, e.g. some Okta configurations) are captured
+best-effort per page; cross-page correlation is not guaranteed.
+
+See [`demos/WebViewPasswordDemo/`](demos/WebViewPasswordDemo/README.md)
+for a runnable example exercising capture, autofill, and the programmatic
+API in both the Keychain-backed and in-memory store modes.
+[`demos/WebViewPasswordOptInDemo/`](demos/WebViewPasswordOptInDemo/README.md)
+shows a **Chrome-style opt-in fill** — silent autofill suppressed, an
+account chooser under the focused login field, and a simulated unlock
+before the password is filled.
+
 ## Browser-initiated popups (`window.open`)
 
 Pages can call `window.open(url, name, features)` or click a link / form
@@ -708,6 +802,11 @@ Additional demos:
   (`alert` / `confirm` / `prompt` / file picker), a custom handler
   returning programmatic answers, and the
   `setDialogHandler(null)` drop mode for headless tests.
+* `demos/WebViewPasswordDemo/` — exercises the built-in password
+  manager: login-submission capture + "Save password?" prompt,
+  autofill on reload, and the programmatic
+  `saveCredential` / `getCredential` / `deleteCredential` API, in both
+  the OS-Keychain and in-memory store modes.
 
 ## Building from source
 

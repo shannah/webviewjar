@@ -9,8 +9,10 @@ import ca.weblite.webview.AsyncJavascriptFunction;
 import ca.weblite.webview.ConsoleDispatcher;
 import ca.weblite.webview.EditingCommand;
 import ca.weblite.webview.EmbeddedWebView;
+import ca.weblite.webview.PasswordDispatcher;
 import ca.weblite.webview.PopupDispatcher;
 import ca.weblite.webview.WebViewDownloadCallback;
+import ca.weblite.webview.WebViewPasswordCallback;
 import ca.weblite.webview.JavascriptFunction;
 import ca.weblite.webview.WebView;
 import ca.weblite.webview.WebViewClickCallback;
@@ -245,6 +247,7 @@ public class WebViewHeavyweightComponent extends WebViewComponent {
         dialogDispatcher.disposeAll();
         popupDispatcher.disposeAll();
         downloadDispatcher.disposeAll();
+        passwordDispatcher.disposeAll();
         if (embedded != null) {
             EmbeddedWebView e = embedded;
             embedded = null;
@@ -651,6 +654,25 @@ public class WebViewHeavyweightComponent extends WebViewComponent {
                                          String frameUrl) {
                 return dialogDispatcher.dispatchFilePicker(
                     multiple, mimeTypes, extensions, pageUrl, frameUrl);
+            }
+        });
+        // Install the password-manager bridge: inject the shared
+        // detection/fill script at document-start and route its native
+        // login-submission / fill-request messages to the per-component
+        // PasswordDispatcher.  The frameUrl arg is the native-stamped
+        // trusted origin.  Anchored in EmbeddedWebView.heap by
+        // setPasswordCallback so the JVM does not collect the lambda while
+        // the native side holds a global ref.
+        embedded.addOnBeforeLoad(PasswordDispatcher.SHIM_JS);
+        embedded.setPasswordCallback(new WebViewPasswordCallback() {
+            @Override
+            public void onLoginSubmitted(String frameUrl, String b64User,
+                                         String b64Pass) {
+                passwordDispatcher.dispatchLoginSubmitted(frameUrl, b64User, b64Pass);
+            }
+            @Override
+            public void onFillRequested(String frameUrl) {
+                passwordDispatcher.dispatchFillRequested(frameUrl);
             }
         });
         // Install the popup bridge so window.open / target=_blank route to

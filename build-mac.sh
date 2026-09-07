@@ -21,5 +21,5 @@ c++ -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/darwin" -dynamiclib \
     src_c/webview_embed.cpp \
     -o "natives/$NATIVE_DIR/libwebview.dylib" \
     -DWEBVIEW_COCOA=1 -DOBJC_OLD_DISPATCH_PROTOTYPES=1 -std=c++11 \
-    -framework WebKit -framework Cocoa -framework QuartzCore \
+    -framework WebKit -framework Cocoa -framework QuartzCore -framework Security \
     -Wl,-undefined,dynamic_lookup
