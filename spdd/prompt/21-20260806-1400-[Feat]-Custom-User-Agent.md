@@ -150,6 +150,15 @@ generated_at: 2026-08-06T14:00:00-07:00
     three engines, for both ADOPT and NATIVE_WINDOW. Verifiable in
     `WebViewAdoptPopupDemo` via its resolver toggle plus the
     `https://httpbin.org/user-agent` echo.
+  - **Point (b) is verifiable on-device, no pop-up involved.** With the
+    resolver toggle **on**, navigating the opener (address bar or the
+    one-click buttons) to the **overridden** host echoes the resolver's
+    UA, while navigating to the **not-overridden** host echoes the
+    User-Agent field's value — per-host selection and fall-through
+    demonstrated on one engine in two clicks. With the toggle **off**,
+    both hosts echo the field's value. This closes the gap where point
+    (b) was covered only by the headless test and could not be shown on
+    any engine.
   - README gains a "Per-host user agent" subsection covering the
     resolver, its precedence, the three consultation points, and the
     cross-host-redirect limitation.
@@ -613,7 +622,25 @@ Files: `src_c/webview_embed.cpp` (macOS + Linux),
    `window.open → https://httpbin.org/user-agent` popup echoes the
    resolver's UA rather than the opener's — the on-device proof for
    point (c).
-3. README "Per-host user agent" subsection: the resolver API, the
+3. The demo also gains an **address bar** — a URL field plus a **Go**
+   button calling `setUrl` on the opener — which is the seam that
+   exercises consultation point **(b)**, a Java-initiated navigation on
+   an already-live view. Until now the demo could not reach point (b)
+   at all: its opener page is a `data:` URL, which has no host, so the
+   resolver never fires for it, and nothing could navigate the opener
+   anywhere else. Point (b) was therefore covered only by the headless
+   test, on no engine.
+   Beside the field sit three one-click destinations, so the per-host
+   contrast needs no typing:
+   - **httpbin (overridden)** → `https://httpbin.org/user-agent`, the
+     host the demo's resolver maps to its distinctive UA;
+   - **httpbingo (not overridden)** → `https://httpbingo.org/user-agent`,
+     a *different* host serving the same `/user-agent` JSON shape so the
+     two responses are read side by side without interpretation.
+     `https://postman-echo.com/get` is the documented fallback if
+     httpbingo is unreachable;
+   - **Home** → back to the opener page, for the pop-up tests.
+4. README "Per-host user agent" subsection: the resolver API, the
    precedence chain, the three consultation points, the
    fall-through-on-null rule, and the cross-host-redirect limitation.
 

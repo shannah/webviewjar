@@ -62,6 +62,17 @@ import javax.swing.ToolTipManager;
  *       proving a popup child's first request is keyed on the child's own
  *       target URL instead of copied from the opener.  Untick it and the
  *       opener-copy behaviour returns unchanged.</li>
+ *   <li><b>Address bar</b> (Canvas 21, 1.5.0) &mdash; a URL field + <b>Go</b>,
+ *       plus one-click <b>httpbin (overridden)</b> /
+ *       <b>httpbingo (not overridden)</b> / <b>Home</b> buttons.  This is what
+ *       makes consultation point <b>(b)</b> &mdash; a Java-initiated
+ *       {@code setUrl} on an already-live view &mdash; testable on-device;
+ *       previously the opener only ever sat on a {@code data:} URL, which has
+ *       no host, so the resolver never fired for it.  With the resolver toggle
+ *       <b>on</b>, httpbin echoes {@code SwingWebView-Resolver} while httpbingo
+ *       echoes the User-Agent field's value: per-host selection and
+ *       fall-through in two clicks, no pop-up involved.  With the toggle
+ *       <b>off</b>, both echo the field's value.</li>
  * </ul>
  *
  * <p>The POST/echo checks hit {@code https://httpbin.org/post}, so they need
@@ -70,6 +81,14 @@ import javax.swing.ToolTipManager;
 public final class WebViewAdoptPopupDemo {
 
     /** A current desktop Safari UA (prefilled into the UA field). */
+    /** The host the demo's resolver overrides; its /user-agent echoes back
+     *  whatever UA the request carried (Canvas 21, 1.5.0, Op 14.3). */
+    private static final String HTTPBIN_UA_URL = "https://httpbin.org/user-agent";
+    /** A DIFFERENT host the resolver does NOT override, serving the same
+     *  /user-agent JSON shape so the two echoes read side by side. Fallback if
+     *  it is unreachable: https://postman-echo.com/get (Canvas 21, Op 14.3). */
+    private static final String HTTPBINGO_UA_URL = "https://httpbingo.org/user-agent";
+
     /** A UA distinct from every preset, so the httpbin echo is unambiguous
      *  about which layer chose it (Canvas 21, 1.5.0). */
     private static final String RESOLVER_UA =
@@ -187,7 +206,76 @@ public final class WebViewAdoptPopupDemo {
             opener.eval("location.reload()");
         });
         bar.add(clearCache);
-        return bar;
+
+        // Canvas 21 Op 14.3: the address row below is what makes consultation
+        // point (b) -- a Java-initiated setUrl on an already-live view --
+        // testable on-device. Without it the opener only ever sat on a data:
+        // URL, which has no host, so the resolver never fired for it.
+        JPanel stack = new JPanel(new java.awt.GridLayout(2, 1));
+        stack.add(bar);
+        stack.add(buildAddressRow(opener));
+        return stack;
+    }
+
+    /**
+     * The address row: a URL field + Go, plus one-click destinations that make
+     * the per-host contrast a two-click test (Canvas 21 Op 14.3).
+     *
+     * <p>With the <b>Per-host resolver</b> toggle on, <b>httpbin (overridden)</b>
+     * must echo {@link #RESOLVER_UA} and <b>httpbingo (not overridden)</b> must
+     * echo the User-Agent field's value — per-host selection and fall-through,
+     * on one engine, with no pop-up involved. With the toggle off, both echo the
+     * field's value.
+     */
+    private static JPanel buildAddressRow(WebViewComponent opener) {
+        JPanel row = new JPanel(new java.awt.FlowLayout(
+            java.awt.FlowLayout.LEFT, 8, 6));
+        row.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+
+        row.add(new JLabel("URL:"));
+        JTextField urlField = new JTextField(HTTPBIN_UA_URL, 38);
+        row.add(urlField);
+
+        JButton go = new JButton("Go");
+        go.addActionListener(e -> {
+            String url = urlField.getText().trim();
+            if (!url.isEmpty()) opener.setUrl(url);
+        });
+        row.add(go);
+        // Enter in the field navigates too.
+        urlField.addActionListener(e -> {
+            String url = urlField.getText().trim();
+            if (!url.isEmpty()) opener.setUrl(url);
+        });
+
+        JButton httpbin = new JButton("httpbin (overridden)");
+        httpbin.setToolTipText(
+            "Resolver maps this host to " + RESOLVER_UA + " when the toggle is on.");
+        httpbin.addActionListener(e -> {
+            urlField.setText(HTTPBIN_UA_URL);
+            opener.setUrl(HTTPBIN_UA_URL);
+        });
+        row.add(httpbin);
+
+        JButton httpbingo = new JButton("httpbingo (not overridden)");
+        httpbingo.setToolTipText(
+            "A different host the resolver declines, so it falls through to the "
+            + "User-Agent field. Same /user-agent JSON shape as httpbin.");
+        httpbingo.addActionListener(e -> {
+            urlField.setText(HTTPBINGO_UA_URL);
+            opener.setUrl(HTTPBINGO_UA_URL);
+        });
+        row.add(httpbingo);
+
+        JButton home = new JButton("Home");
+        home.setToolTipText("Back to the opener page, for the pop-up tests.");
+        home.addActionListener(e -> {
+            urlField.setText("");
+            opener.setUrl(openerPage());
+        });
+        row.add(home);
+
+        return row;
     }
 
     private static void addTab(JTabbedPane tabs, String title,
