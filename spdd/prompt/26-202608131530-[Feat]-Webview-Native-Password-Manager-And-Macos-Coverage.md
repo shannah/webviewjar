@@ -202,6 +202,26 @@ generated_at: 2026-08-13T15:30:00-07:00
 - Add `-framework Security` to `build-mac.sh` (Keychain access). This is
   the only build-script change in this canvas; libsecret / Advapi32
   linkage is added by canvases 27 / 28.
+- **A credential with no user name is a first-class credential.** A
+  two-step login — the pattern Google, Microsoft and Okta use, where the
+  page carrying the password field has no username field at all — yields
+  a capture whose username is the empty string. It must save, find,
+  enumerate, update and delete exactly like any other credential. This is
+  not a corner case: it is most corporate sign-ins.
+
+  Found in the field on macOS: such a credential was written to the
+  Keychain correctly (the item exists under
+  `"<namespace>:<origin>"` with a blank Account and the correct
+  `millis\npassword` value) and was then invisible to **every** read, so a
+  consumer could not show, copy, fill, update or delete it — and a
+  consumer that verifies its own write by reading it back concluded the
+  save had failed. The macOS reads dropped any item whose
+  `kSecAttrAccount` came back absent, which is how macOS reports an empty
+  account attribute. The Linux/libsecret backend (canvas 27) already
+  handles this correctly: a missing `username` attribute leaves the
+  username empty and the row is kept. Operation 16 below carries the
+  macOS fix.
+
 - Definition of Done:
   - All 22 STORY-006-001 ACs pass on macOS with the new code (AC21/AC22
     cover the no-re-prompt-for-unchanged / changed-password-still-prompts
@@ -223,6 +243,14 @@ generated_at: 2026-08-13T15:30:00-07:00
     JavaScript cannot reach the enumeration (macOS native round-trip
     verified via the demo; Linux / Windows native bodies in canvases
     27 / 28).
+  - The **empty-user-name** round trip holds on macOS, against the real
+    Keychain: `save` of a credential whose username is `""` is followed by
+    a `find(origin)` that returns it with its password intact, a
+    `findAll()` that includes it, a second `save` for the same
+    `{origin, ""}` that updates rather than duplicates it, and a
+    `delete(origin, "")` that removes it. The same four hold for a
+    credential that has a username, so the fix costs the ordinary case
+    nothing.
   - A `WebViewPasswordDemo` under `demos/` exercises capture + save
     prompt + autofill in default-handler, custom-handler, and
     in-memory-store modes, plus a fill-consent toggle (install `CONFIRM`)
@@ -1340,18 +1368,41 @@ File: `src_c/webview_embed.cpp` (guarded `#if defined(WEBVIEW_COCOA)`)
      UTF-8 of `millis + "\n" + password`; if present `SecItemUpdate`
      (set `kSecValueData`), else `SecItemAdd` (add `kSecValueData` +
      `kSecAttrSynchronizable=kCFBooleanFalse`). Return `errSecSuccess`.
+     **When the add returns `errSecDuplicateItem`, fall back to
+     `SecItemUpdate` and return that result instead.** The existence
+     check said the item was absent and the add says it is a duplicate:
+     the two queries disagree about an attribute — an empty
+     `kSecAttrAccount` is the case that produced this — and a write must
+     not be silently lost because of that disagreement. Nothing else
+     distinguishes the fallback from the ordinary update path.
    - `webview_cred_store_find`: the macOS keychain rejects
      `kSecMatchLimitAll` combined with `kSecReturnData` (it returns
      `errSecParam`, not results), so read in **two phases**. Phase 1 —
      query `service` + `kSecMatchLimitAll` + `kSecReturnAttributes=true`
-     and **no** `kSecReturnData`, to enumerate every matching item's
-     `kSecAttrAccount` (the username). Phase 2 — for each account from
-     phase 1, issue a second query `service` + `kSecAttrAccount` +
-     `kSecMatchLimitOne` + `kSecReturnData=true` to fetch that one item's
-     `kSecValueData`; split it on the first `\n` into millis + password.
-     Collect `[username, millis, password]` per item. Return a
-     `jobjectArray` of the flat triples (Java sorts). Empty array when
-     phase 1 yields `errSecItemNotFound` or no accounts.
+     + **`kSecReturnRef=true`** and **no** `kSecReturnData`, to enumerate
+     every matching item's `kSecAttrAccount` (the username) **and its
+     item reference**. Phase 2 — for each item from phase 1, issue a
+     second query of **`kSecValueRef` + `kSecReturnData=true`** to fetch
+     that one item's `kSecValueData`; split it on the first `\n` into
+     millis + password. Collect `[username, millis, password]` per item.
+     Return a `jobjectArray` of the flat triples (Java sorts). Empty array
+     when phase 1 yields `errSecItemNotFound` or no items.
+
+     Two rules make this work for a credential saved with **no user
+     name**, and both are load-bearing:
+
+     1. **An absent or empty `kSecAttrAccount` is an empty user name, not
+        a row to drop.** macOS reports an empty account attribute as
+        absent, so skipping such rows hid an entire class of credential —
+        every two-step login — from every read while it sat in the
+        keychain. Keep the item; the username is `""`.
+     2. **Phase 2 fetches by item reference, never by re-matching
+        `{service, account}`.** Re-matching makes the secret fetch depend
+        on the very attribute round-trip that rule 1 has just established
+        cannot be relied on. The reference names the row phase 1 already
+        found, so no attribute has to match itself. This is the
+        root-cause fix; rule 1 alone would leave the same fragility one
+        query further down.
    - `webview_cred_store_find_all` (STORY-006-005): the enumerate-all
      variant of `find`, across every origin. Because each item's
      `kSecAttrService` is `"<namespace>:<origin>"` (origin embedded in the
@@ -1363,12 +1414,14 @@ File: `src_c/webview_embed.cpp` (guarded `#if defined(WEBVIEW_COCOA)`)
      `kSecReturnData` combination still returns `errSecParam`). Phase 1 —
      query `kSecClass=kSecClassGenericPassword` + `kSecMatchLimitAll` +
      `kSecReturnAttributes=true` (no `kSecReturnData`, no service filter)
-     to enumerate every item's `kSecAttrService` + `kSecAttrAccount`;
-     keep only items whose service begins with `"<service>:"`, take
-     `origin` = the service text after that prefix and `username` = the
-     account. Phase 2 — for each kept item, issue a single-item
-     `kSecAttrService=<that full service>` + `kSecAttrAccount=<username>`
-     + `kSecMatchLimitOne` + `kSecReturnData=true` query to fetch its
+     plus **`kSecReturnRef=true`**, to enumerate every item's
+     `kSecAttrService` + `kSecAttrAccount` + item reference; keep only
+     items whose service begins with `"<service>:"`, take `origin` = the
+     service text after that prefix and `username` = the account. The
+     **service is required** here (the origin is derived from it) but the
+     **account is not**: an absent account is an empty user name, exactly
+     as in `find` above. Phase 2 — for each kept item, issue a
+     **`kSecValueRef` + `kSecReturnData=true`** query to fetch its
      `kSecValueData`; split on the first `\n` into millis + password.
      Emit a flat **quad** `[origin, username, millis, password]` per
      kept item. Return a `jobjectArray` of the flat quads (Java sorts).
@@ -1737,6 +1790,14 @@ Files under `test/ca/weblite/webview/`:
   engine; `PasswordDispatcher` derives the origin solely from that. This
   is the anti-cross-origin-theft/injection invariant — a page can only
   ever cause its *own* origin's credential to be saved or filled.
+- **A credential the store accepted is a credential the store can
+  return.** No read may drop a row on the strength of an attribute that
+  the OS is free not to round-trip: on macOS the account is optional on
+  the way out (absent means no user name) and the secret is fetched by
+  item reference, so what `save` wrote is what `find` and `findAll` hand
+  back. A backend that silently filters its own rows is worse than one
+  that fails loudly — the write looks successful, the credential is
+  unreachable, and nothing anywhere reports a fault.
 - **Autofill is exact-origin.** `store.find` is keyed by the canonical
   origin; a credential for `https://example.com` is never offered on
   `https://evil.com`, `http://example.com`, or
