@@ -202,6 +202,29 @@ generated_at: 2026-08-13T15:30:00-07:00
 - Add `-framework Security` to `build-mac.sh` (Keychain access). This is
   the only build-script change in this canvas; libsecret / Advapi32
   linkage is added by canvases 27 / 28.
+- **Carry the user name across a two-step login (the "username-first
+  flow").** When the password page has no username field, the name the
+  user typed on the site's *previous* step is what the credential should
+  be stored under. The shim therefore remembers the last user name typed
+  on an origin and supplies it with the capture when — and only when —
+  the submitted form has no user name of its own. Chrome does the same
+  thing: its password manager records a `PossibleUsernameData` when the
+  user modifies a non-password text field, keyed to the signon realm, and
+  consults it when a password form is submitted without a username; the
+  candidate goes stale after
+  [`kSingleUsernameTimeToLive = base::Minutes(5)`](https://raw.githubusercontent.com/chromium/chromium/main/components/password_manager/core/browser/password_manager_constants.h),
+  and candidates that look like one-time codes are excluded. This canvas
+  mirrors the local heuristic — the same five-minute window, the same
+  same-origin rule, an OTP guard of its own — and deliberately does **not**
+  attempt Chrome's server-side field predictions, which have no analogue
+  here.
+
+  It is a **heuristic, and it never overrides the page**: a form that has
+  a user name field uses that field's value, empty or not. The remembered
+  name is only ever a fallback for a form that offers nothing, and a
+  credential with no user name at all stays legal (below), because the
+  user may have arrived some way the heuristic cannot see.
+
 - **A credential with no user name is a first-class credential.** A
   two-step login — the pattern Google, Microsoft and Okta use, where the
   page carrying the password field has no username field at all — yields
@@ -243,6 +266,14 @@ generated_at: 2026-08-13T15:30:00-07:00
     JavaScript cannot reach the enumeration (macOS native round-trip
     verified via the demo; Linux / Windows native bodies in canvases
     27 / 28).
+  - The **username-first flow** carries the name across a two-step login:
+    in `WebViewPasswordDemo`, `/two-step` collects a user name and posts
+    to a second page that has only a password field; submitting it raises
+    a Save prompt whose user name is the one typed on the first page, and
+    the credential is stored under it. The same page submitted more than
+    five minutes later, or with a one-time-code-shaped value, saves with
+    no user name rather than a wrong one. A single-page login form is
+    unaffected: its own field wins, empty or not.
   - The **empty-user-name** round trip holds on macOS, against the real
     Keychain: `save` of a credential whose username is `""` is followed by
     a `find(origin)` that returns it with its password intact, a
@@ -1239,11 +1270,52 @@ File: `src/ca/weblite/webview/PasswordDispatcher.java` (string constant)
      first text/email/tel input; if no form: the nearest preceding
      text/email/tel input in document order. May be null (password-only
      forms) — then username is treated as empty string.
+4a. Username-first flow — remembering a name typed on an earlier step:
+   - `rememberUserName(el)` records `{value, typedAt, name, autocomplete,
+     origin}` for a text/email/tel input the user has just committed a
+     value to, **only** when that input's form (if any) contains no
+     password field: a form that has both is an ordinary login form whose
+     user name is captured properly by `findFields()`, and recording from
+     it would only pollute the candidate.
+   - It is stored in `sessionStorage` under a private key, with an
+     in-page variable as the fallback when `sessionStorage` throws
+     (sandboxed frames, storage disabled). `sessionStorage` is what makes
+     the flow work across a real navigation — the two steps of a
+     multi-page login are two documents, and a variable would not
+     survive. It is origin- and tab-scoped by the browser, which is the
+     same-origin rule enforced for free; the stored `origin` is compared
+     anyway rather than trusted implicitly. Nothing secret is written:
+     the value is a user name the page itself just received, and it is
+     never a password — a password field is never a candidate, because
+     `isTexty()` excludes it.
+   - Recorded on `change` (the value committed, on blur or Enter) and on
+     `submit` of a form that has a text field and **no** password field —
+     the first step of a two-step login, which is the case this exists
+     for.
+   - `rememberedUserName()` returns the stored value, or `''`, applying
+     the guards: not older than **five minutes** (Chromium's
+     `kSingleUsernameTimeToLive`), same origin, non-empty, and not
+     one-time-code-shaped. The OTP guard rejects a field whose name,
+     id or autocomplete matches `otp`, `one-time`, `passcode`,
+     `verification`/`verify`, `2fa`/`mfa`, `security code`, `token` or
+     `pin`, and rejects a value that is 3–8 digits and nothing else. A
+     one-time code stored as a user name is worse than no user name: it
+     is wrong, it is stable-looking, and the user would have to notice it
+     to fix it.
+   - The candidate is **not** cleared when used. It expires on its own,
+     exactly as Chromium's does; a second submission of the same login
+     (a mistyped password, a server round trip) must not lose the name.
+
 5. Save capture:
    - Attach a capturing `submit` listener on `document` that, when the
      submitted form contains the password field, reads `user?.value ?? ''`
      and `pass.value`, and if `pass.value` is non-empty calls
      `post('S|' + b64e(user) + '|' + b64e(passVal))`.
+   - **When that user name is empty**, substitute `rememberedUserName()`
+     (4a) before posting. Only then: a form that has a user name field
+     uses that field's value, and this never overrides a page that
+     supplied one. An empty result leaves the capture exactly as it is
+     today — a credential with no user name, which remains legal.
    - Best-effort SPA: a capturing `click` listener on `document` for
      `button, input[type=submit], [role=button]` that, if a password
      field currently has a non-empty value and there is no enclosing
