@@ -77,6 +77,8 @@ public class WebViewPasswordDemo {
 
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", new LoginHandler());
+        // Canvas 26 4a: a two-step login, the shape the username-first flow exists for.
+        server.createContext("/two-step", new TwoStepHandler());
         server.setExecutor(null);
         server.start();
         int port = server.getAddress().getPort();
@@ -186,6 +188,9 @@ public class WebViewPasswordDemo {
 
         append("Serving login form at " + origin + "/");
         append("Submit the form to trigger the Save prompt; Reload to autofill.");
+        append("Open " + origin + "/two-step for the two-step login: the user name is");
+        append("typed on the first page, the password on the second, and the Save prompt");
+        append("should still name the user (Canvas 26 4a).");
         wv.setUrl(origin + "/");
     }
 
@@ -218,6 +223,57 @@ public class WebViewPasswordDemo {
                     + "</form>"
                     + "<script>document.querySelector('input[type=password]')"
                     + ".addEventListener('input',function(){console.log('password field input event');});</script>";
+            }
+            byte[] body = html.getBytes(StandardCharsets.UTF_8);
+            ex.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
+            ex.sendResponseHeaders(200, body.length);
+            try (OutputStream os = ex.getResponseBody()) {
+                os.write(body);
+            }
+        }
+    }
+
+    /**
+     * A two-step login (Canvas 26 4a): the user name on one page, the password on
+     * the next, with no user name field anywhere near the password. This is what
+     * Google, Microsoft and Okta do, and without the username-first flow the Save
+     * prompt has no name to offer. The two pages are separate documents on one
+     * origin, so the candidate has to survive a real navigation.
+     */
+    private static final class TwoStepHandler implements HttpHandler {
+        @Override public void handle(HttpExchange ex) throws IOException {
+            String path = ex.getRequestURI().getPath();
+            String html;
+            if (path.endsWith("/done")) {
+                ex.getRequestBody().read(new byte[4096]);
+                html = "<!doctype html><meta charset=utf-8><title>Logged in</title>"
+                    + "<body style='font-family:sans-serif;padding:2rem'>"
+                    + "<h2>Logged in.</h2>"
+                    + "<p>The Save prompt should have named the user you typed on step 1.</p>"
+                    + "<p><a href='/two-step'>Start over</a></p>";
+            } else if (path.endsWith("/password")) {
+                // Step 2: a password and nothing else -- exactly the Okta shape. The
+                // user name is shown as text, which no password manager can read.
+                html = "<!doctype html><meta charset=utf-8><title>Verify with your password</title>"
+                    + "<body style='font-family:sans-serif;padding:2rem'>"
+                    + "<h2>Verify with your password</h2>"
+                    + "<p><span id='who' style='color:#555'></span></p>"
+                    + "<form method='post' action='/two-step/done'>"
+                    + "<p><label>Password<br><input type='password' name='password' "
+                    + "autocomplete='current-password'></label></p>"
+                    + "<p><button type='submit'>Verify</button></p>"
+                    + "</form>"
+                    + "<script>try{document.getElementById('who').textContent="
+                    + "new URLSearchParams(location.search).get('u')||'';}catch(e){}</script>";
+            } else {
+                // Step 1: a user name and nothing else.
+                html = "<!doctype html><meta charset=utf-8><title>Sign in</title>"
+                    + "<body style='font-family:sans-serif;padding:2rem'>"
+                    + "<h2>Sign in</h2>"
+                    + "<form method='get' action='/two-step/password'>"
+                    + "<p><label>Username<br><input name='u' autocomplete='username'></label></p>"
+                    + "<p><button type='submit'>Next</button></p>"
+                    + "</form>";
             }
             byte[] body = html.getBytes(StandardCharsets.UTF_8);
             ex.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");

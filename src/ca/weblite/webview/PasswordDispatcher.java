@@ -80,10 +80,38 @@ public final class PasswordDispatcher {
         "try{el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}}\n" +
         "window.__webview_pw_fill__=function(bu,bp){try{var f=findFields();if(!f)return;" +
         "if(f.user&&bu)setVal(f.user,b64d(bu));if(f.pass)setVal(f.pass,b64d(bp));}catch(e){}};\n" +
+        // Canvas 26 4a: the username-first flow. A two-step login (Google, Microsoft,
+        // Okta) puts the user name on a page of its own, so the password page has no
+        // field to read. Remember what was typed on the earlier step -- in
+        // sessionStorage, which is origin- and tab-scoped and survives the navigation
+        // between the two documents -- and supply it only when the submitted form
+        // offers no user name of its own. Five-minute window and the OTP guard mirror
+        // Chromium's kSingleUsernameTimeToLive and its is_likely_otp rule.
+        "var UKEY='__webview_pw_user__';var UTTL=300000;var memU=null;\n" +
+        "function uPut(o){try{sessionStorage.setItem(UKEY,JSON.stringify(o));}catch(e){}memU=o;}\n" +
+        "function uRead(){try{var r=sessionStorage.getItem(UKEY);if(r)return JSON.parse(r);}catch(e){}return memU;}\n" +
+        "function isOtpish(n,a,v){var h=((n||'')+' '+(a||'')).toLowerCase();" +
+        "if(/otp|one[-_ ]?time|passcode|verification|verify|2fa|mfa|security[-_ ]?code|token|pin/.test(h))return true;" +
+        "return /^[0-9]{3,8}$/.test(v);}\n" +
+        "function hasPassword(form){try{return !!(form&&form.querySelector&&" +
+        "form.querySelector('input[type=password]'));}catch(e){return false;}}\n" +
+        "function rememberUserName(el){try{if(!isTexty(el))return;var v=(el.value||'').trim();if(!v)return;" +
+        "if(hasPassword(el.form))return;" +
+        "uPut({v:v,t:Date.now(),n:(el.name||el.id||''),a:(el.getAttribute&&el.getAttribute('autocomplete'))||''," +
+        "o:location.origin});}catch(e){}}\n" +
+        "function rememberedUserName(){try{var c=uRead();if(!c||!c.v)return '';" +
+        "if(c.o!==location.origin)return '';if(Date.now()-c.t>UTTL)return '';" +
+        "if(isOtpish(c.n,c.a,c.v))return '';return c.v;}catch(e){return '';}}\n" +
+        "document.addEventListener('change',function(ev){try{rememberUserName(ev.target);}catch(e){}},true);\n" +
+        "document.addEventListener('submit',function(ev){try{var t=ev.target;" +
+        "if(t&&!hasPassword(t)&&t.elements){for(var i=0;i<t.elements.length;i++){" +
+        "if(isTexty(t.elements[i])&&(t.elements[i].value||'').trim()){rememberUserName(t.elements[i]);break;}}}}" +
+        "catch(e){}},true);\n" +
         "var lastPost=0;\n" +
         "function capture(){try{var f=findFields();if(!f||!f.pass)return;var pv=f.pass.value;if(!pv)return;" +
         "var now=Date.now();if(now-lastPost<400)return;lastPost=now;" +
-        "var uv=f.user?f.user.value:'';post('S|'+b64e(uv)+'|'+b64e(pv));}catch(e){}}\n" +
+        "var uv=f.user?f.user.value:'';if(!uv)uv=rememberedUserName();" +
+        "post('S|'+b64e(uv)+'|'+b64e(pv));}catch(e){}}\n" +
         "document.addEventListener('submit',function(ev){try{var t=ev.target;" +
         "if(t&&t.querySelector&&t.querySelector('input[type=password]'))capture();}catch(e){}},true);\n" +
         "document.addEventListener('click',function(ev){try{var el=ev.target;" +
