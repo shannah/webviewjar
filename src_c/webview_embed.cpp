@@ -8140,7 +8140,21 @@ JNIEXPORT jboolean JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cred_1
                              cfVal, kCFBooleanFalse };
         CFDictionaryRef add = CFDictionaryCreate(kCFAllocatorDefault, ak, av, 5,
             &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-        ok = (SecItemAdd(add, nullptr) == errSecSuccess) ? JNI_TRUE : JNI_FALSE;
+        OSStatus addSt = SecItemAdd(add, nullptr);
+        if (addSt == errSecDuplicateItem) {
+            // The existence check above said no and the add says duplicate:
+            // the query and the item disagree on an attribute (an empty
+            // account is the case that produced this).  Update rather than
+            // report a failure the caller cannot act on.
+            const void *uk[] = { kSecValueData };
+            const void *uv[] = { cfVal };
+            CFDictionaryRef upd = CFDictionaryCreate(kCFAllocatorDefault,
+                uk, uv, 1, &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks);
+            addSt = SecItemUpdate(query, upd);
+            CFRelease(upd);
+        }
+        ok = (addSt == errSecSuccess) ? JNI_TRUE : JNI_FALSE;
         CFRelease(add);
     }
     CFRelease(query); CFRelease(cfSvc); CFRelease(cfAcct); CFRelease(cfVal);
@@ -8196,14 +8210,13 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
     std::vector<std::string> triples;
     // The macOS keychain rejects kSecMatchLimitAll combined with
     // kSecReturnData (errSecParam), so read in two phases: phase 1
-    // enumerates the matching accounts (attributes only, no data); phase 2
-    // fetches each account's secret with a single-item, data-returning
-    // query.
+    // enumerates the matching items (attributes and refs, no data); phase 2
+    // fetches each item's secret by reference with a data-returning query.
     const void *q1k[] = { kSecClass, kSecAttrService, kSecMatchLimit,
-                          kSecReturnAttributes };
+                          kSecReturnAttributes, kSecReturnRef };
     const void *q1v[] = { kSecClassGenericPassword, cfSvc, kSecMatchLimitAll,
-                          kCFBooleanTrue };
-    CFDictionaryRef q1 = CFDictionaryCreate(kCFAllocatorDefault, q1k, q1v, 4,
+                          kCFBooleanTrue, kCFBooleanTrue };
+    CFDictionaryRef q1 = CFDictionaryCreate(kCFAllocatorDefault, q1k, q1v, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef listResult = nullptr;
     OSStatus st = SecItemCopyMatching(q1, &listResult);
@@ -8213,25 +8226,36 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
         for (CFIndex i = 0; i < n; i++) {
             CFDictionaryRef item =
                 (CFDictionaryRef)CFArrayGetValueAtIndex(arr, i);
+            // A credential saved with NO user name -- a two-step login, where
+            // the page carrying the password field has no username field --
+            // comes back with kSecAttrAccount empty or absent.  Skipping it
+            // here hid the credential from every lookup while it sat in the
+            // keychain: the save wrote it, and nothing could ever read it
+            // back.  An absent account is an empty user name, not a bad row.
             CFStringRef acct =
                 (CFStringRef)CFDictionaryGetValue(item, kSecAttrAccount);
-            if (!acct) continue;
             std::string username, millisStr = "0", password;
-            CFIndex maxlen = CFStringGetMaximumSizeForEncoding(
-                CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
-            std::vector<char> buf((size_t)maxlen);
-            if (!CFStringGetCString(acct, buf.data(), maxlen,
-                                    kCFStringEncodingUTF8)) {
-                continue;
+            if (acct) {
+                CFIndex maxlen = CFStringGetMaximumSizeForEncoding(
+                    CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
+                std::vector<char> buf((size_t)maxlen);
+                if (!CFStringGetCString(acct, buf.data(), maxlen,
+                                        kCFStringEncodingUTF8)) {
+                    continue;
+                }
+                username = buf.data();
             }
-            username = buf.data();
-            // Phase 2: fetch this account's secret.
-            const void *q2k[] = { kSecClass, kSecAttrService, kSecAttrAccount,
-                                  kSecMatchLimit, kSecReturnData };
-            const void *q2v[] = { kSecClassGenericPassword, cfSvc, acct,
-                                  kSecMatchLimitOne, kCFBooleanTrue };
+            // Phase 2: fetch this item's secret BY REFERENCE.  Matching on
+            // {service, account} a second time cannot fetch an item whose
+            // account did not round-trip; the ref names the row phase 1 has
+            // already found, so the fetch no longer depends on an attribute
+            // matching itself.
+            CFTypeRef ref = CFDictionaryGetValue(item, kSecValueRef);
+            if (!ref) continue;
+            const void *q2k[] = { kSecValueRef, kSecReturnData };
+            const void *q2v[] = { ref, kCFBooleanTrue };
             CFDictionaryRef q2 = CFDictionaryCreate(kCFAllocatorDefault,
-                q2k, q2v, 5, &kCFTypeDictionaryKeyCallBacks,
+                q2k, q2v, 2, &kCFTypeDictionaryKeyCallBacks,
                 &kCFTypeDictionaryValueCallBacks);
             CFTypeRef dataResult = nullptr;
             if (SecItemCopyMatching(q2, &dataResult) == errSecSuccess
@@ -8349,10 +8373,11 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
     // service starts with "<service>:".  Two phases as in find: the
     // kSecMatchLimitAll + kSecReturnData combination returns errSecParam.
     std::vector<std::string> quads;
-    const void *q1k[] = { kSecClass, kSecMatchLimit, kSecReturnAttributes };
+    const void *q1k[] = { kSecClass, kSecMatchLimit, kSecReturnAttributes,
+                          kSecReturnRef };
     const void *q1v[] = { kSecClassGenericPassword, kSecMatchLimitAll,
-                          kCFBooleanTrue };
-    CFDictionaryRef q1 = CFDictionaryCreate(kCFAllocatorDefault, q1k, q1v, 3,
+                          kCFBooleanTrue, kCFBooleanTrue };
+    CFDictionaryRef q1 = CFDictionaryCreate(kCFAllocatorDefault, q1k, q1v, 4,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef listResult = nullptr;
     OSStatus st = SecItemCopyMatching(q1, &listResult);
@@ -8366,7 +8391,9 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
                 (CFStringRef)CFDictionaryGetValue(item, kSecAttrService);
             CFStringRef acct =
                 (CFStringRef)CFDictionaryGetValue(item, kSecAttrAccount);
-            if (!svcAttr || !acct) continue;
+            // An absent account is a credential saved with no user name (a
+            // two-step login), not a row to drop -- see find() above.
+            if (!svcAttr) continue;
             // Read the full service string.
             CFIndex svcMax = CFStringGetMaximumSizeForEncoding(
                 CFStringGetLength(svcAttr), kCFStringEncodingUTF8) + 1;
@@ -8382,23 +8409,27 @@ JNIEXPORT jobjectArray JNICALL Java_ca_weblite_webview_WebViewNative_webview_1cr
                 continue;
             }
             std::string origin = fullSvc.substr(prefix.size());
-            // Read the account (username).
-            CFIndex acctMax = CFStringGetMaximumSizeForEncoding(
-                CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
-            std::vector<char> acctBuf((size_t)acctMax);
-            if (!CFStringGetCString(acct, acctBuf.data(), acctMax,
-                                    kCFStringEncodingUTF8)) {
-                continue;
+            // Read the account (username); absent means none was captured.
+            std::string username;
+            if (acct) {
+                CFIndex acctMax = CFStringGetMaximumSizeForEncoding(
+                    CFStringGetLength(acct), kCFStringEncodingUTF8) + 1;
+                std::vector<char> acctBuf((size_t)acctMax);
+                if (!CFStringGetCString(acct, acctBuf.data(), acctMax,
+                                        kCFStringEncodingUTF8)) {
+                    continue;
+                }
+                username = acctBuf.data();
             }
-            std::string username = acctBuf.data();
             std::string millisStr = "0", password;
-            // Phase 2: fetch this item's secret by exact service+account.
-            const void *q2k[] = { kSecClass, kSecAttrService, kSecAttrAccount,
-                                  kSecMatchLimit, kSecReturnData };
-            const void *q2v[] = { kSecClassGenericPassword, svcAttr, acct,
-                                  kSecMatchLimitOne, kCFBooleanTrue };
+            // Phase 2: fetch this item's secret by reference, not by matching
+            // {service, account} again -- see find() above.
+            CFTypeRef ref = CFDictionaryGetValue(item, kSecValueRef);
+            if (!ref) continue;
+            const void *q2k[] = { kSecValueRef, kSecReturnData };
+            const void *q2v[] = { ref, kCFBooleanTrue };
             CFDictionaryRef q2 = CFDictionaryCreate(kCFAllocatorDefault,
-                q2k, q2v, 5, &kCFTypeDictionaryKeyCallBacks,
+                q2k, q2v, 2, &kCFTypeDictionaryKeyCallBacks,
                 &kCFTypeDictionaryValueCallBacks);
             CFTypeRef dataResult = nullptr;
             if (SecItemCopyMatching(q2, &dataResult) == errSecSuccess
